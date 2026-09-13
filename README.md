@@ -41,6 +41,7 @@ Commands are body velocities: linear m/s and angular rad/s.
 ```bash
 uv venv && uv pip install -e ".[dev]"
 .venv/bin/ramms-fleet-collect --rovers 8 --seconds 600 --out data/run0
+.venv/bin/ramms-fleet-view --rovers 8     # watch them in the MuJoCo viewer
 .venv/bin/pytest
 ```
 

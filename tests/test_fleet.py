@@ -56,6 +56,21 @@ def test_front_range_shrinks_towards_wall_and_bumps(empty_fleet):
     assert obs.bump[0]
 
 
+def test_shared_world_matches_separate_worlds():
+    # Contact-free driving only: contacts are solved jointly in a shared world,
+    # which converges slightly differently from separate worlds.
+    configs = [EnvConfig(clutter=0.0, seed=s) for s in range(3)]
+    separate = MujocoFleet(configs, seed=5)
+    shared = MujocoFleet(configs, seed=5, shared_world=True)
+    assert len(separate.worlds) == 3 and len(shared.worlds) == 1
+    a, b = separate.reset(), shared.reset()
+    commands = np.tile([0.3, 0.2], (3, 1))
+    for _ in range(10):
+        a, b = separate.step(commands), shared.step(commands)
+    np.testing.assert_allclose(a.pose, b.pose, atol=1e-3)
+    np.testing.assert_allclose(a.ranges, b.ranges, atol=1e-3)
+
+
 def test_reset_poses_are_clear_of_obstacles():
     fleet = MujocoFleet([EnvConfig(clutter=1.2, seed=s) for s in range(4)], seed=2)
     for _ in range(5):

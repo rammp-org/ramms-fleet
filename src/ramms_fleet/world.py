@@ -71,7 +71,7 @@ def build_world(configs: list[EnvConfig], layout: ArenaLayout = ArenaLayout()) -
     world.add_geom(
         name="floor",
         type=mujoco.mjtGeom.mjGEOM_PLANE,
-        size=[extent, extent, 0.1],
+        size=[extent / 2, extent / 2, 0.1],
         pos=[extent / 2 - layout.cell_size / 2, extent / 2 - layout.cell_size / 2, 0],
         rgba=[0.55, 0.55, 0.55, 1],
     )

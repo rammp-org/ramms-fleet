@@ -1,9 +1,10 @@
 """Headless MuJoCo backend: N rovers stepped in lockstep.
 
-Each rover gets its own small model holding one arena cell. The cells never
-interact, and independent models step faster than one combined model because
-their contact problems are solved separately. It also mirrors the federated
-setup, where every client owns its environment.
+By default each rover gets its own small model holding one arena cell. The
+cells never interact, and independent models step faster than one combined
+model because their contact problems are solved separately. It also mirrors
+the federated setup, where every client owns its environment. `shared_world`
+puts every cell in one model instead, which is what the viewer needs.
 """
 
 from __future__ import annotations
@@ -47,14 +48,14 @@ class FleetObs:
 
 
 class _RoverSim:
-    """One rover in its own cell and model."""
+    """One rover's cell plus its addresses inside the model that holds it."""
 
-    def __init__(self, config: EnvConfig, layout: ArenaLayout):
-        spec, (self.cell,) = build_world([config], layout)
-        self.model = spec.compile()
-        self.data = mujoco.MjData(self.model)
-        m = self.model
-        p = ROVER_PREFIX.format(index=0)
+    def __init__(self, model: mujoco.MjModel, data: mujoco.MjData, cell: Cell, index: int):
+        self.model = model
+        self.data = data
+        self.cell = cell
+        m = model
+        p = ROVER_PREFIX.format(index=index)
         joint = m.joint(p + "root")
         self.qpos = joint.qposadr[0]
         self.dof = joint.dofadr[0]
@@ -75,12 +76,21 @@ class MujocoFleet:
         seed: int = 0,
         layout: ArenaLayout = ArenaLayout(),
         params: RoverParams = RoverParams(),
+        shared_world: bool = False,
     ):
-        self.rovers = [_RoverSim(config, layout) for config in configs]
+        self.worlds: list[tuple[mujoco.MjModel, mujoco.MjData]] = []
+        self.rovers: list[_RoverSim] = []
+        groups = [configs] if shared_world else [[config] for config in configs]
+        for group in groups:
+            spec, cells = build_world(group, layout)
+            model = spec.compile()
+            data = mujoco.MjData(model)
+            self.worlds.append((model, data))
+            self.rovers += [_RoverSim(model, data, cell, i) for i, cell in enumerate(cells)]
         self.layout = layout
         self.params = params
         self.num_rovers = len(configs)
-        timestep = self.rovers[0].model.opt.timestep
+        timestep = self.worlds[0][0].opt.timestep
         self.substeps = max(1, round(1.0 / (control_hz * timestep)))
         self.dt = self.substeps * timestep
         self._rng = np.random.default_rng(seed)
@@ -101,7 +111,8 @@ class MujocoFleet:
             ]
             r.data.qvel[r.dof : r.dof + 6] = 0
             r.data.ctrl[r.act] = 0
-            mujoco.mj_forward(r.model, r.data)
+        for model, data in self.worlds:
+            mujoco.mj_forward(model, data)
         return self.observe()
 
     def step(self, commands: np.ndarray) -> FleetObs:
@@ -115,14 +126,15 @@ class MujocoFleet:
         )
         for r, ctrl in zip(self.rovers, wheels, strict=True):
             r.data.ctrl[r.act] = ctrl
+        for model, data in self.worlds:
             # Sensors are only read once per control step, and every
             # rangefinder ray is tested against every geom, so skip sensor
             # evaluation on all but the last substep.
             if self.substeps > 1:
-                r.model.opt.disableflags |= _SENSOR_DISABLE_BIT
-                mujoco.mj_step(r.model, r.data, nstep=self.substeps - 1)
-                r.model.opt.disableflags &= ~_SENSOR_DISABLE_BIT
-            mujoco.mj_step(r.model, r.data)
+                model.opt.disableflags |= _SENSOR_DISABLE_BIT
+                mujoco.mj_step(model, data, nstep=self.substeps - 1)
+                model.opt.disableflags &= ~_SENSOR_DISABLE_BIT
+            mujoco.mj_step(model, data)
         return self.observe()
 
     def observe(self) -> FleetObs:

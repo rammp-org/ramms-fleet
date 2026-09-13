@@ -19,6 +19,7 @@ dev = ["pytest>=8.0", "ruff>=0.6"]
 
 [project.scripts]
 ramms-fleet-collect = "ramms_fleet.collect:main"
+ramms-fleet-view = "ramms_fleet.view:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

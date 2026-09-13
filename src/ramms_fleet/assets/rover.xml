@@ -1,0 +1,62 @@
+<!--
+  Small differential-drive rover for fleet experiments.
+
+  Loaded standalone by the MuJoCo backend and meant to import unchanged into
+  RAMMS through URLab, so it sticks to plain MJCF: no compiler overrides, no
+  euler angles (orientations use zaxis/xyaxes), no plugins.
+
+  Frame: +x forward, +y left, +z up. Body origin sits at wheel-axle height.
+-->
+<mujoco model="ramms_rover">
+  <worldbody>
+    <body name="chassis" pos="0 0 0.035">
+      <freejoint name="root"/>
+      <site name="imu" pos="0 0 0.01" size="0.005"/>
+
+      <geom name="body" type="box" size="0.10 0.075 0.025" pos="0 0 0.01" mass="0.9" rgba="0.20 0.45 0.80 1"/>
+      <geom name="bumper" type="box" size="0.008 0.075 0.02" pos="0.108 0 0.005" mass="0.05" rgba="0.10 0.10 0.10 1"/>
+      <!-- Frictionless rear caster keeps the base level without resisting turns. -->
+      <geom name="caster" type="sphere" size="0.02" pos="-0.08 0 -0.015" condim="1" mass="0.05" rgba="0.10 0.10 0.10 1"/>
+
+      <!-- Contact volume for the bump sensor: covers the chassis above the caster's floor contact. -->
+      <site name="bump" type="box" size="0.125 0.085 0.03" pos="0.005 0 0.01" rgba="1 0 0 0"/>
+
+      <!-- Rangefinders measure along each site's +z axis: a fan from -60 to +60 degrees. -->
+      <site name="range_m60" pos="0.117 -0.03 0.01" zaxis="0.5 -0.866 0" size="0.004"/>
+      <site name="range_m30" pos="0.117 -0.015 0.01" zaxis="0.866 -0.5 0" size="0.004"/>
+      <site name="range_0" pos="0.117 0 0.01" zaxis="1 0 0" size="0.004"/>
+      <site name="range_p30" pos="0.117 0.015 0.01" zaxis="0.866 0.5 0" size="0.004"/>
+      <site name="range_p60" pos="0.117 0.03 0.01" zaxis="0.5 0.866 0" size="0.004"/>
+
+      <!-- Looks along +x (cameras view along their local -z). -->
+      <camera name="front" pos="0.11 0 0.04" xyaxes="0 -1 0 0 0 1" fovy="70"/>
+
+      <body name="wheel_left" pos="0.03 0.095 0">
+        <joint name="wheel_left" type="hinge" axis="0 1 0" damping="0.0005"/>
+        <geom type="cylinder" size="0.035 0.01" zaxis="0 1 0" friction="1.2 0.01 0.001" mass="0.05" rgba="0.15 0.15 0.15 1"/>
+      </body>
+      <body name="wheel_right" pos="0.03 -0.095 0">
+        <joint name="wheel_right" type="hinge" axis="0 1 0" damping="0.0005"/>
+        <geom type="cylinder" size="0.035 0.01" zaxis="0 1 0" friction="1.2 0.01 0.001" mass="0.05" rgba="0.15 0.15 0.15 1"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <velocity name="wheel_left" joint="wheel_left" kv="0.1" ctrlrange="-25 25" forcerange="-0.3 0.3"/>
+    <velocity name="wheel_right" joint="wheel_right" kv="0.1" ctrlrange="-25 25" forcerange="-0.3 0.3"/>
+  </actuator>
+
+  <sensor>
+    <rangefinder name="range_m60" site="range_m60"/>
+    <rangefinder name="range_m30" site="range_m30"/>
+    <rangefinder name="range_0" site="range_0"/>
+    <rangefinder name="range_p30" site="range_p30"/>
+    <rangefinder name="range_p60" site="range_p60"/>
+    <accelerometer name="accel" site="imu"/>
+    <gyro name="gyro" site="imu"/>
+    <touch name="bump" site="bump"/>
+    <jointvel name="wheel_left_vel" joint="wheel_left"/>
+    <jointvel name="wheel_right_vel" joint="wheel_right"/>
+  </sensor>
+</mujoco>

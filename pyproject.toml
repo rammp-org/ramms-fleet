@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ramms-fleet"
+version = "0.1.0"
+description = "Federated learning experiments on simulated RAMMS rover fleets"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+dependencies = [
+    "mujoco>=3.3.0",
+    "numpy>=1.24.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.6"]
+
+[project.scripts]
+ramms-fleet-collect = "ramms_fleet.collect:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+ramms_fleet = ["assets/*.xml"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.ruff.lint.flake8-bugbear]
+# Frozen dataclasses are safe as argument defaults.
+extend-immutable-calls = ["ramms_fleet.world.ArenaLayout", "ramms_fleet.fleet.RoverParams", "ramms_fleet.policy.WanderParams"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

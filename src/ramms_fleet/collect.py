@@ -15,23 +15,12 @@ from pathlib import Path
 
 import numpy as np
 
-from ramms_fleet.fleet import RANGE_SENSORS, MujocoFleet, RoverParams
-from ramms_fleet.policy import CRUISE, WanderParams, WanderPolicy
+from ramms_fleet.fleet import MujocoFleet
+from ramms_fleet.policy import CRUISE, WanderPolicy
+from ramms_fleet.spec import FEATURES, RANGE_SENSORS, RoverParams, WanderParams
 from ramms_fleet.world import EnvConfig
 
-FEATURES = (
-    *RANGE_SENSORS,
-    "accel_x",
-    "accel_y",
-    "accel_z",
-    "gyro_x",
-    "gyro_y",
-    "gyro_z",
-    "wheel_left",
-    "wheel_right",
-    "cmd_v",
-    "cmd_w",
-)
+__all__ = ["FEATURES", "collect", "collision_labels", "spread_configs"]
 
 
 def collision_labels(bump: np.ndarray, episode: np.ndarray, horizon_steps: int) -> np.ndarray:

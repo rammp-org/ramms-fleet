@@ -40,9 +40,8 @@ def train_handler(msg: Message, context: Context) -> Message:
         proximal_mu=float(cfg["proximal-mu"]),
     )
     metrics = MetricRecord({"num-examples": len(data.x_train), "train-loss": loss})
-    return msg.create_reply(
-        RecordDict({"arrays": ArrayRecord.from_torch_state_dict(model.state_dict()), "metrics": metrics})
-    )
+    content = RecordDict({"arrays": ArrayRecord.from_torch_state_dict(model.state_dict()), "metrics": metrics})
+    return Message(content=content, reply_to=msg)
 
 
 @app.evaluate()
@@ -57,4 +56,4 @@ def evaluate_handler(msg: Message, context: Context) -> Message:
             "bce": scores["bce"],
         }
     )
-    return msg.create_reply(RecordDict({"metrics": metrics}))
+    return Message(content=RecordDict({"metrics": metrics}), reply_to=msg)

@@ -101,8 +101,10 @@ def run_evaluation(data_dir: Path, results_dir: Path) -> dict:
         return cache[history]
 
     report: dict = {"rovers": [], "summary": {}}
-    shared = {name: results_dir / name / "model.pt" for name in ("centralized", "federated")}
-    shared_models = {name: load_model(path) for name, path in shared.items() if path.exists()}
+    # Every subdirectory holding a model.pt is a method trained on all rovers
+    # (centralized, federated, fedprox, ...); local/ holds one model per rover.
+    shared = sorted(p.parent for p in results_dir.glob("*/model.pt"))
+    shared_models = {p.name: load_model(p / "model.pt") for p in shared}
 
     local_own, local_others = [], []
     per_method: dict[str, list[float]] = {name: [] for name in shared_models}
@@ -140,7 +142,8 @@ def eval_main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     report = run_evaluation(args.data, args.results)
 
-    methods = [m for m in ("local", "centralized", "federated") if m in report["rovers"][0]]
+    first = report["rovers"][0]
+    methods = [m for m in first if isinstance(first[m], dict)]
     print("Test AUPRC per rover (higher is better; positive rate shown for scale)")
     print(f"{'rover':>5} {'clutter':>7} {'pos rate':>8} " + " ".join(f"{m:>11}" for m in methods))
     for row in report["rovers"]:

@@ -15,23 +15,12 @@ from dataclasses import dataclass
 import mujoco
 import numpy as np
 
+from ramms_fleet.spec import RANGE_ANGLES_DEG, RANGE_SENSORS, RoverParams
 from ramms_fleet.world import ROVER_PREFIX, ArenaLayout, Cell, EnvConfig, build_world
 
-RANGE_SENSORS = ("range_m60", "range_m30", "range_0", "range_p30", "range_p60")
-RANGE_ANGLES_DEG = (-60.0, -30.0, 0.0, 30.0, 60.0)
+__all__ = ["RANGE_ANGLES_DEG", "RANGE_SENSORS", "FleetObs", "MujocoFleet", "RoverParams"]
+
 _SENSOR_DISABLE_BIT = int(mujoco.mjtDisableBit.mjDSBL_SENSOR)
-
-
-@dataclass(frozen=True)
-class RoverParams:
-    """Must match assets/rover.xml."""
-
-    wheel_radius: float = 0.035
-    track_width: float = 0.19
-    max_range: float = 2.0
-    """Rangefinder readings beyond this, or with no hit, are reported as this."""
-    bump_force: float = 0.1
-    """Touch-sensor force in newtons above which the rover counts as bumping."""
 
 
 @dataclass

@@ -25,6 +25,7 @@ ramms-fleet-view = "ramms_fleet.view:main"
 ramms-fleet-baseline = "ramms_fleet.experiment:baseline_main"
 ramms-fleet-eval = "ramms_fleet.experiment:eval_main"
 ramms-fleet-federate = "ramms_fleet.federate:main"
+ramms-fleet-sweep = "ramms_fleet.sweep:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -48,6 +49,7 @@ lr = 0.001
 hidden = 64
 history = 4
 proximal-mu = 0.0
+evaluate-every = 1
 seed = 0
 results-dir = "results/federated"
 
@@ -60,7 +62,7 @@ select = ["E", "F", "I", "B", "UP"]
 
 [tool.ruff.lint.flake8-bugbear]
 # Frozen dataclasses are safe as argument defaults.
-extend-immutable-calls = ["ramms_fleet.world.ArenaLayout", "ramms_fleet.fleet.RoverParams", "ramms_fleet.policy.WanderParams"]
+extend-immutable-calls = ["ramms_fleet.world.ArenaLayout", "ramms_fleet.spec.RoverParams", "ramms_fleet.spec.WanderParams"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

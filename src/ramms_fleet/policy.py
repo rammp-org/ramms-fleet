@@ -7,29 +7,14 @@ collision labels. After a bump they back off and spin to a new heading.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import numpy as np
 
-from ramms_fleet.fleet import RANGE_ANGLES_DEG, FleetObs
+from ramms_fleet.fleet import FleetObs
+from ramms_fleet.spec import RANGE_ANGLES_DEG, WanderParams
+
+__all__ = ["CRUISE", "REVERSE", "SPIN", "WanderParams", "WanderPolicy"]
 
 CRUISE, REVERSE, SPIN = 0, 1, 2
-
-
-@dataclass(frozen=True)
-class WanderParams:
-    cruise_speed: float = 0.3
-    reverse_speed: float = 0.15
-    max_turn_rate: float = 2.5
-    turn_noise: float = 1.5
-    """Scale of the random turn-rate process, rad/s per sqrt(s)."""
-    turn_reversion: float = 1.0
-    avoid_gain: float = 0.3
-    """0 drives blind; around 1 avoids most obstacles."""
-    avoid_distance: float = 0.5
-    reverse_seconds: float = 0.6
-    spin_seconds: tuple[float, float] = (0.4, 1.2)
-    stuck_seconds: float = 3.0
 
 
 class WanderPolicy:

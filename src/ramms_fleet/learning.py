@@ -14,8 +14,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from ramms_fleet.fleet import RANGE_SENSORS, RoverParams
-from ramms_fleet.policy import WanderParams
+from ramms_fleet.spec import RANGE_SENSORS, RoverParams, WanderParams
 
 # Fixed per-feature scales from physical limits rather than dataset statistics,
 # so normalizing never needs information from other rovers.

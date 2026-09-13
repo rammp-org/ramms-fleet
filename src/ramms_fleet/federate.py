@@ -4,7 +4,7 @@ Starts a Flower SuperLink (whose ServerApp aggregates weights and holds no
 data) and one SuperNode per rover. Each SuperNode is given only its own
 rover's file through `--node-config`, and runs every ClientApp task in a child
 process. The run is submitted with `flwr run`; afterwards everything is shut
-down and the global model is in `<out>/federated/model.pt`.
+down and the global model is in `<out>/<name>/model.pt`.
 
 All processes run as the same user on one machine, so file access is
 separated by what each process is told, not by OS permissions.
@@ -59,7 +59,7 @@ def run_federated(args: argparse.Namespace) -> Path:
     if not (PROJECT_ROOT / "pyproject.toml").exists():
         raise SystemExit(f"expected a source checkout with pyproject.toml at {PROJECT_ROOT}")
     files = [f.resolve() for f in rover_files(args.data)]
-    out = (args.out / "federated").resolve()
+    out = (args.out / args.name).resolve()
     logs = out / "logs"
     logs.mkdir(parents=True, exist_ok=True)
     (out / "model.pt").unlink(missing_ok=True)
@@ -127,6 +127,7 @@ def run_federated(args: argparse.Namespace) -> Path:
             "hidden": args.hidden,
             "history": args.history,
             "proximal-mu": args.proximal_mu,
+            "evaluate-every": args.evaluate_every,
             "seed": args.seed,
             "results-dir": out,
         }
@@ -150,7 +151,7 @@ def run_federated(args: argparse.Namespace) -> Path:
             run.wait()
         if run.returncode != 0 or not (out / "model.pt").exists():
             raise SystemExit(f"federated run failed (exit {run.returncode}); see {logs}")
-        print(f"federated training finished in {time.monotonic() - started:.0f}s")
+        print(f"{args.name} training finished in {time.monotonic() - started:.0f}s")
         return out
     finally:
         _stop(processes)
@@ -159,13 +160,15 @@ def run_federated(args: argparse.Namespace) -> Path:
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--data", type=Path, required=True, help="run directory from ramms-fleet-collect")
-    parser.add_argument("--out", type=Path, required=True, help="results directory (federated/ is created in it)")
+    parser.add_argument("--out", type=Path, required=True, help="results directory; the run goes in <out>/<name>")
+    parser.add_argument("--name", default="federated", help="method name, used as the output subdirectory")
     parser.add_argument("--rounds", type=int, default=20)
     parser.add_argument("--local-epochs", type=int, default=1)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--hidden", type=int, default=64)
     parser.add_argument("--history", type=int, default=4)
     parser.add_argument("--proximal-mu", type=float, default=0.0, help="> 0 turns FedAvg into FedProx")
+    parser.add_argument("--evaluate-every", type=int, default=1, help="client evaluation interval in rounds")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--port-base", type=int, default=9091, help="uses port-base .. port-base + 2 + rovers")
     run_federated(parser.parse_args(argv))

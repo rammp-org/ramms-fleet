@@ -1,0 +1,162 @@
+"""Headless MuJoCo backend: N rovers stepped in lockstep.
+
+Each rover gets its own small model holding one arena cell. The cells never
+interact, and independent models step faster than one combined model because
+their contact problems are solved separately. It also mirrors the federated
+setup, where every client owns its environment.
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass
+
+import mujoco
+import numpy as np
+
+from ramms_fleet.world import ROVER_PREFIX, ArenaLayout, Cell, EnvConfig, build_world
+
+RANGE_SENSORS = ("range_m60", "range_m30", "range_0", "range_p30", "range_p60")
+RANGE_ANGLES_DEG = (-60.0, -30.0, 0.0, 30.0, 60.0)
+_SENSOR_DISABLE_BIT = int(mujoco.mjtDisableBit.mjDSBL_SENSOR)
+
+
+@dataclass(frozen=True)
+class RoverParams:
+    """Must match assets/rover.xml."""
+
+    wheel_radius: float = 0.035
+    track_width: float = 0.19
+    max_range: float = 2.0
+    """Rangefinder readings beyond this, or with no hit, are reported as this."""
+    bump_force: float = 0.1
+    """Touch-sensor force in newtons above which the rover counts as bumping."""
+
+
+@dataclass
+class FleetObs:
+    """Batched observations, first axis is the rover index."""
+
+    ranges: np.ndarray  # (N, 5) metres, ordered as RANGE_SENSORS
+    accel: np.ndarray  # (N, 3) m/s^2, rover frame
+    gyro: np.ndarray  # (N, 3) rad/s, rover frame
+    wheel_vel: np.ndarray  # (N, 2) rad/s, left and right
+    bump: np.ndarray  # (N,) bool
+    pose: np.ndarray  # (N, 3) x, y relative to the cell centre, and yaw
+    upright: np.ndarray  # (N,) bool, False once the rover has tipped over
+
+
+class _RoverSim:
+    """One rover in its own cell and model."""
+
+    def __init__(self, config: EnvConfig, layout: ArenaLayout):
+        spec, (self.cell,) = build_world([config], layout)
+        self.model = spec.compile()
+        self.data = mujoco.MjData(self.model)
+        m = self.model
+        p = ROVER_PREFIX.format(index=0)
+        joint = m.joint(p + "root")
+        self.qpos = joint.qposadr[0]
+        self.dof = joint.dofadr[0]
+        self.body = m.body(p + "chassis").id
+        self.act = [m.actuator(p + "wheel_left").id, m.actuator(p + "wheel_right").id]
+        self.range_adr = [m.sensor(p + s).adr[0] for s in RANGE_SENSORS]
+        self.accel_adr = m.sensor(p + "accel").adr[0]
+        self.gyro_adr = m.sensor(p + "gyro").adr[0]
+        self.bump_adr = m.sensor(p + "bump").adr[0]
+        self.wheel_adr = [m.sensor(p + "wheel_left_vel").adr[0], m.sensor(p + "wheel_right_vel").adr[0]]
+
+
+class MujocoFleet:
+    def __init__(
+        self,
+        configs: list[EnvConfig],
+        control_hz: float = 20.0,
+        seed: int = 0,
+        layout: ArenaLayout = ArenaLayout(),
+        params: RoverParams = RoverParams(),
+    ):
+        self.rovers = [_RoverSim(config, layout) for config in configs]
+        self.layout = layout
+        self.params = params
+        self.num_rovers = len(configs)
+        timestep = self.rovers[0].model.opt.timestep
+        self.substeps = max(1, round(1.0 / (control_hz * timestep)))
+        self.dt = self.substeps * timestep
+        self._rng = np.random.default_rng(seed)
+
+    def reset(self, rovers: list[int] | None = None) -> FleetObs:
+        """Places rovers at random clear poses in their cells, at rest."""
+        for i in range(self.num_rovers) if rovers is None else rovers:
+            r = self.rovers[i]
+            x, y, yaw = self._sample_clear_pose(r.cell)
+            r.data.qpos[r.qpos : r.qpos + 7] = [
+                x,
+                y,
+                self.params.wheel_radius,
+                math.cos(yaw / 2),
+                0,
+                0,
+                math.sin(yaw / 2),
+            ]
+            r.data.qvel[r.dof : r.dof + 6] = 0
+            r.data.ctrl[r.act] = 0
+            mujoco.mj_forward(r.model, r.data)
+        return self.observe()
+
+    def step(self, commands: np.ndarray) -> FleetObs:
+        """Applies (linear m/s, angular rad/s) body-velocity commands, shape (N, 2)."""
+        half_track = self.params.track_width / 2
+        wheels = (
+            np.column_stack(
+                [commands[:, 0] - commands[:, 1] * half_track, commands[:, 0] + commands[:, 1] * half_track]
+            )
+            / self.params.wheel_radius
+        )
+        for r, ctrl in zip(self.rovers, wheels, strict=True):
+            r.data.ctrl[r.act] = ctrl
+            # Sensors are only read once per control step, and every
+            # rangefinder ray is tested against every geom, so skip sensor
+            # evaluation on all but the last substep.
+            if self.substeps > 1:
+                r.model.opt.disableflags |= _SENSOR_DISABLE_BIT
+                mujoco.mj_step(r.model, r.data, nstep=self.substeps - 1)
+                r.model.opt.disableflags &= ~_SENSOR_DISABLE_BIT
+            mujoco.mj_step(r.model, r.data)
+        return self.observe()
+
+    def observe(self) -> FleetObs:
+        n = self.num_rovers
+        ranges = np.empty((n, len(RANGE_SENSORS)))
+        accel = np.empty((n, 3))
+        gyro = np.empty((n, 3))
+        wheel_vel = np.empty((n, 2))
+        bump = np.empty(n, dtype=bool)
+        pose = np.empty((n, 3))
+        upright = np.empty(n, dtype=bool)
+        for i, r in enumerate(self.rovers):
+            s = r.data.sensordata
+            ranges[i] = s[r.range_adr]
+            accel[i] = s[r.accel_adr : r.accel_adr + 3]
+            gyro[i] = s[r.gyro_adr : r.gyro_adr + 3]
+            wheel_vel[i] = s[r.wheel_adr]
+            bump[i] = s[r.bump_adr] > self.params.bump_force
+            x, y, _, qw, qx, qy, qz = r.data.qpos[r.qpos : r.qpos + 7]
+            yaw = math.atan2(2 * (qw * qz + qx * qy), 1 - 2 * (qy * qy + qz * qz))
+            pose[i] = (x - r.cell.center[0], y - r.cell.center[1], yaw)
+            # xmat[8]: z component of the chassis up axis in the world frame.
+            upright[i] = r.data.xmat[r.body, 8] > 0.5
+        ranges[(ranges < 0) | (ranges > self.params.max_range)] = self.params.max_range
+        return FleetObs(
+            ranges=ranges, accel=accel, gyro=gyro, wheel_vel=wheel_vel, bump=bump, pose=pose, upright=upright
+        )
+
+    def _sample_clear_pose(self, cell: Cell, clearance: float = 0.3) -> tuple[float, float, float]:
+        inner = self.layout.cell_size / 2 - self.layout.wall_thickness - clearance
+        cx, cy = cell.center
+        for _ in range(1000):
+            x = cx + self._rng.uniform(-inner, inner)
+            y = cy + self._rng.uniform(-inner, inner)
+            if all(math.hypot(x - o.x, y - o.y) > o.radius + clearance for o in cell.obstacles):
+                return x, y, self._rng.uniform(-math.pi, math.pi)
+        raise RuntimeError(f"no clear pose in cell {cell.index} (clutter {cell.config.clutter})")

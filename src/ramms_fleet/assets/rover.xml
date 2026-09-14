@@ -29,7 +29,7 @@
       <site name="range_p60" pos="0.117 0.03 0.01" zaxis="0.5 0.866 0" size="0.004"/>
 
       <!-- Looks along +x (cameras view along their local -z). -->
-      <camera name="front" pos="0.11 0 0.04" xyaxes="0 -1 0 0 0 1" fovy="70"/>
+      <camera name="front" pos="0.11 0 0.04" xyaxes="0 -1 0 0 0 1" fovy="70" resolution="64 48"/>
 
       <body name="wheel_left" pos="0.03 0.095 0">
         <joint name="wheel_left" type="hinge" axis="0 1 0" damping="0.0005"/>

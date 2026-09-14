@@ -55,6 +55,14 @@ def run_seed(seed: int, args: argparse.Namespace) -> Path:
             seed,
             "--out",
             data,
+            "--speed",
+            *args.speed,
+            "--range-noise",
+            *args.range_noise,
+            "--accel-noise",
+            *args.accel_noise,
+            "--gyro-noise",
+            *args.gyro_noise,
         ],
         logs / "collect.log",
         data / "meta.json",
@@ -105,7 +113,7 @@ def run_seed(seed: int, args: argparse.Namespace) -> Path:
     (results / "evaluation.json").unlink(missing_ok=True)
     _run(
         f"seed {seed} eval",
-        [BIN / "ramms-fleet-eval", "--data", data, "--results", results],
+        [BIN / "ramms-fleet-eval", "--data", data, "--results", results, "--finetune-epochs", args.finetune_epochs],
         logs / "eval.log",
         results / "evaluation.json",
     )
@@ -135,10 +143,15 @@ def summarize(out: Path, seeds: list[int]) -> dict:
     }
     summary: dict = {"seeds": seeds, "methods": {m: _stats(v) for m, v in per_seed.items()}, "paired": {}}
     fedprox = [m for m in methods if m.startswith("fedprox")]
-    pairs = [("fedavg", "local"), ("centralized", "fedavg")] + [(m, "fedavg") for m in fedprox]
+    pairs = [("fedavg", "local"), ("centralized", "fedavg"), ("fedavg+ft", "fedavg"), ("fedavg+ft", "local")]
+    pairs += [(m, "fedavg") for m in fedprox]
     for a, b in pairs:
         if a in per_seed and b in per_seed:
             summary["paired"][f"{a} - {b}"] = _stats([x - y for x, y in zip(per_seed[a], per_seed[b], strict=True)])
+
+    rows = [{"seed": s, **row} for s in seeds for row in reports[s]["rovers"]]
+    _write_per_rover_csv(out / "per_rover.csv", rows, methods)
+    summary["by_factor"] = _by_factor(rows, methods)
 
     # Rovers are ordered by clutter in every seed, so average by rover index.
     num_rovers = len(reports[seeds[0]]["rovers"])
@@ -152,7 +165,7 @@ def summarize(out: Path, seeds: list[int]) -> dict:
     ]
 
     curves = {}
-    for name in [m for m in methods if m.startswith("fed")]:
+    for name in [m for m in methods if m.startswith("fed") and not m.endswith("+ft")]:
         by_round: dict[int, list[float]] = {}
         for s in seeds:
             path = out / f"seed_{s}" / name / "rounds.json"
@@ -167,6 +180,49 @@ def summarize(out: Path, seeds: list[int]) -> dict:
     return summary
 
 
+FACTORS = ("clutter", "cruise_speed", "range_noise")
+
+
+def _write_per_rover_csv(path: Path, rows: list[dict], methods: list[str]) -> None:
+    columns = ["seed", "rover", "clutter", "cruise_speed", "range_noise", "accel_noise", "gyro_noise"]
+    lines = [",".join(columns + [f"{m}_auprc" for m in methods])]
+    for row in rows:
+        values = [row.get(c) for c in columns] + [row[m]["auprc"] for m in methods]
+        lines.append(",".join("" if v is None else f"{v:.6g}" if isinstance(v, float) else str(v) for v in values))
+    path.write_text("\n".join(lines) + "\n")
+
+
+def _by_factor(rows: list[dict], methods: list[str]) -> dict:
+    """Mean AUPRC per method in low, middle, and high thirds of each varying rover factor.
+
+    Speed and noise are shuffled across rover indices per seed, so they are
+    analysed by value over all rovers of all seeds rather than by index.
+    """
+    result = {}
+    for factor in FACTORS:
+        values = np.array([row.get(factor) if row.get(factor) is not None else np.nan for row in rows], float)
+        if np.all(np.isnan(values)) or np.nanmax(values) - np.nanmin(values) < 1e-9:
+            continue
+        edges = np.nanquantile(values, [1 / 3, 2 / 3])
+        bins = np.digitize(values, edges)
+        groups = []
+        for b, label in enumerate(("low", "mid", "high")):
+            members = [row for row, k in zip(rows, bins, strict=True) if k == b]
+            if not members:
+                continue
+            group_values = [row[factor] for row in members]
+            groups.append(
+                {
+                    "bin": label,
+                    "range": [float(min(group_values)), float(max(group_values))],
+                    "rovers": len(members),
+                    **{m: float(np.nanmean([row[m]["auprc"] for row in members])) for m in methods},
+                }
+            )
+        result[factor] = groups
+    return result
+
+
 def print_summary(summary: dict) -> None:
     methods = list(summary["methods"])
     width = max(11, *(len(m) for m in methods))
@@ -177,10 +233,12 @@ def print_summary(summary: dict) -> None:
     print("Paired differences (same seed)")
     for k, s in summary["paired"].items():
         print(f"  {k:>{2 * width + 3}}: {s['mean']:+.3f} ± {s['std']:.3f}")
-    print("By rover (mean over seeds)")
-    print(f"  {'rover':>5} {'clutter':>7} " + " ".join(f"{m:>{width}}" for m in methods))
-    for row in summary["by_rover"]:
-        print(f"  {row['rover']:>5} {row['clutter']:>7.2f} " + " ".join(f"{row[m]:>{width}.3f}" for m in methods))
+    for factor, groups in summary.get("by_factor", {}).items():
+        print(f"By {factor} (all rovers of all seeds, thirds by value)")
+        print(f"  {'bin':>4} {'range':>13} " + " ".join(f"{m:>{width}}" for m in methods))
+        for g in groups:
+            span = f"{g['range'][0]:.2f}-{g['range'][1]:.2f}"
+            print(f"  {g['bin']:>4} {span:>13} " + " ".join(f"{g[m]:>{width}.3f}" for m in methods))
     print("Federated evaluation AUPRC by round (mean over seeds)")
     for name, curve in summary["federated_eval_auprc_by_round"].items():
         print(f"  {name:>{width}}: " + "  ".join(f"r{r}={s['mean']:.3f}" for r, s in curve.items()))
@@ -201,6 +259,13 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--port-base", type=int, default=9200)
     parser.add_argument("--data-root", type=Path, default=Path("data/sweep"))
     parser.add_argument("--out", type=Path, default=Path("results/sweep"))
+    parser.add_argument("--speed", type=float, nargs=2, default=(0.3, 0.3), metavar=("MIN", "MAX"))
+    parser.add_argument("--range-noise", type=float, nargs=2, default=(0.0, 0.0), metavar=("MIN", "MAX"))
+    parser.add_argument("--accel-noise", type=float, nargs=2, default=(0.0, 0.0), metavar=("MIN", "MAX"))
+    parser.add_argument("--gyro-noise", type=float, nargs=2, default=(0.0, 0.0), metavar=("MIN", "MAX"))
+    parser.add_argument(
+        "--finetune-epochs", type=int, default=0, help="also score federated models fine-tuned per rover"
+    )
     parser.add_argument("--summarize-only", action="store_true")
     args = parser.parse_args(argv)
     args.data_root, args.out = args.data_root.resolve(), args.out.resolve()
@@ -216,3 +281,38 @@ def main(argv: list[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
+
+
+def compare_main(argv: list[str] | None = None) -> None:
+    """Writes a markdown comparison of several finished sweeps."""
+    parser = argparse.ArgumentParser(description="Compare finished sweeps as markdown tables.")
+    parser.add_argument("sweeps", nargs="+", help="NAME=RESULTS_DIR, each holding summary.json")
+    parser.add_argument("--out", type=Path, help="also write the markdown here")
+    args = parser.parse_args(argv)
+
+    summaries = {}
+    for item in args.sweeps:
+        name, _, path = item.partition("=")
+        summaries[name] = json.loads((Path(path) / "summary.json").read_text())
+    methods = list(dict.fromkeys(m for s in summaries.values() for m in s["methods"]))
+    pairs = list(dict.fromkeys(p for s in summaries.values() for p in s["paired"]))
+
+    def cell(stats: dict | None, signed: bool = False) -> str:
+        if not stats or math.isnan(stats["mean"]):
+            return ""
+        return f"{stats['mean']:{'+' if signed else ''}.3f} ± {stats['std']:.3f}"
+
+    lines = ["## Mean test AUPRC (mean ± std over seeds)", ""]
+    lines.append("| Method | " + " | ".join(summaries) + " |")
+    lines.append("|---|" + "---:|" * len(summaries))
+    for m in methods:
+        lines.append(f"| {m} | " + " | ".join(cell(s["methods"].get(m)) for s in summaries.values()) + " |")
+    lines += ["", "## Paired differences within a seed", ""]
+    lines.append("| Comparison | " + " | ".join(summaries) + " |")
+    lines.append("|---|" + "---:|" * len(summaries))
+    for p in pairs:
+        lines.append(f"| {p} | " + " | ".join(cell(s["paired"].get(p), signed=True) for s in summaries.values()) + " |")
+    text = "\n".join(lines) + "\n"
+    print(text)
+    if args.out:
+        args.out.write_text(text)

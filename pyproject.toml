@@ -18,6 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "ruff>=0.6"]
+video = ["imageio>=2.30", "imageio-ffmpeg>=0.5", "pillow>=10"]
 
 [project.scripts]
 ramms-fleet-collect = "ramms_fleet.collect:main"
@@ -26,6 +27,8 @@ ramms-fleet-baseline = "ramms_fleet.experiment:baseline_main"
 ramms-fleet-eval = "ramms_fleet.experiment:eval_main"
 ramms-fleet-federate = "ramms_fleet.federate:main"
 ramms-fleet-sweep = "ramms_fleet.sweep:main"
+ramms-fleet-compare = "ramms_fleet.sweep:compare_main"
+ramms-fleet-render = "ramms_fleet.render:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -6,13 +6,17 @@
   federated training tries to approach without pooling)
 
 `ramms-fleet-eval` scores every trained model on every rover's held-out test
-split. It reads all rovers' test data, which a real deployment could not do;
-it is the experimenter's view, outside the federated protocol.
+split. With `--finetune-epochs`, each federated model is also personalized: a
+copy is fine-tuned on one rover's own training data and scored on that rover
+(method `<name>+ft`), which a real client could do without sharing anything.
+The evaluation itself reads all rovers' test data, which a real deployment
+could not do; it is the experimenter's view, outside the federated protocol.
 """
 
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import math
 from pathlib import Path
@@ -89,10 +93,11 @@ def _nanmean(values: list[float]) -> float:
     return float(np.mean(finite)) if finite else float("nan")
 
 
-def run_evaluation(data_dir: Path, results_dir: Path) -> dict:
+def run_evaluation(data_dir: Path, results_dir: Path, finetune_epochs: int = 0, lr: float = 1e-3) -> dict:
     files = rover_files(data_dir)
     meta = json.loads((data_dir / "meta.json").read_text())
-    clutter = {r["rover"]: r["clutter"] for r in meta["rovers"]}
+    rover_meta = {r["rover"]: r for r in meta["rovers"]}
+    profile_keys = ("clutter", "cruise_speed", "range_noise", "accel_noise", "gyro_noise")
     cache: dict[int, dict[int, RoverData]] = {}
 
     def data_for(history: int) -> dict[int, RoverData]:
@@ -105,14 +110,21 @@ def run_evaluation(data_dir: Path, results_dir: Path) -> dict:
     # (centralized, federated, fedprox, ...); local/ holds one model per rover.
     shared = sorted(p.parent for p in results_dir.glob("*/model.pt"))
     shared_models = {p.name: load_model(p / "model.pt") for p in shared}
+    finetuned = [name for name in shared_models if name.startswith("fed")] if finetune_epochs > 0 else []
 
     local_own, local_others = [], []
-    per_method: dict[str, list[float]] = {name: [] for name in shared_models}
+    per_method: dict[str, list[float]] = {name: [] for name in [*shared_models, *(f"{n}+ft" for n in finetuned)]}
     for i, f in enumerate(files):
-        row: dict = {"rover": i, "clutter": clutter.get(i)}
+        row: dict = {"rover": i, **{k: rover_meta.get(i, {}).get(k) for k in profile_keys}}
         for name, (model, history) in shared_models.items():
-            row[name] = _score(model, data_for(history)[i])
+            data = data_for(history)[i]
+            row[name] = _score(model, data)
             per_method[name].append(row[name]["auprc"])
+            if name in finetuned:
+                personal = copy.deepcopy(model)
+                train(personal, data.x_train, data.y_train, epochs=finetune_epochs, lr=lr, seed=0)
+                row[f"{name}+ft"] = _score(personal, data)
+                per_method[f"{name}+ft"].append(row[f"{name}+ft"]["auprc"])
 
         local_path = results_dir / "local" / f"{f.stem}.pt"
         if local_path.exists():
@@ -139,16 +151,18 @@ def eval_main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Score trained models on every rover's test split.")
     parser.add_argument("--data", type=Path, required=True)
     parser.add_argument("--results", type=Path, required=True)
+    parser.add_argument("--finetune-epochs", type=int, default=0, help="personalize federated models on each rover")
     args = parser.parse_args(argv)
-    report = run_evaluation(args.data, args.results)
+    report = run_evaluation(args.data, args.results, finetune_epochs=args.finetune_epochs)
 
     first = report["rovers"][0]
     methods = [m for m in first if isinstance(first[m], dict)]
     print("Test AUPRC per rover (higher is better; positive rate shown for scale)")
-    print(f"{'rover':>5} {'clutter':>7} {'pos rate':>8} " + " ".join(f"{m:>11}" for m in methods))
+    width = max(11, *(len(m) for m in methods))
+    print(f"{'rover':>5} {'clutter':>7} {'pos rate':>8} " + " ".join(f"{m:>{width}}" for m in methods))
     for row in report["rovers"]:
         pos_rate = row[methods[0]]["positive_rate"] if methods else float("nan")
-        cells = " ".join(f"{row[m]['auprc']:>11.3f}" for m in methods)
+        cells = " ".join(f"{row[m]['auprc']:>{width}.3f}" for m in methods)
         print(f"{row['rover']:>5} {row['clutter']:>7.2f} {pos_rate:>8.3f} {cells}")
     for key, value in report["summary"].items():
         print(f"{key}: {value:.3f}")

@@ -108,3 +108,40 @@ def test_collection_is_deterministic(tmp_path):
         a = np.load(tmp_path / "a" / f"rover_{i:02d}.npz")
         b = np.load(tmp_path / "b" / f"rover_{i:02d}.npz")
         np.testing.assert_array_equal(a["features"], b["features"])
+
+
+def test_range_noise_matches_profile_and_leaves_bump_exact():
+    from ramms_fleet.fleet import RoverProfile
+
+    configs = [EnvConfig(clutter=0.0), EnvConfig(clutter=0.0)]
+    fleet = MujocoFleet(configs, seed=3, profiles=[RoverProfile(), RoverProfile(range_noise=0.1)])
+    fleet.reset()
+    readings = np.array([fleet.step(np.zeros((2, 2))).ranges for _ in range(400)])
+    clean, noisy = readings[:, 0, :], readings[:, 1, :]
+    assert clean.std(axis=0).max() < 1e-3
+    # Clipping at 0 and max_range only matters near the limits; readings here sit well inside.
+    assert 0.08 < noisy.std(axis=0).mean() < 0.12
+
+
+def test_policy_uses_per_rover_cruise_speed():
+    from ramms_fleet.policy import WanderPolicy
+
+    fleet = MujocoFleet([EnvConfig(clutter=0.0)] * 2, seed=0)
+    obs = fleet.reset()
+    policy = WanderPolicy(2, fleet.dt, cruise_speeds=np.array([0.15, 0.6]))
+    policy.reset(np.arange(2), obs)
+    commands = policy.act(obs)
+    assert commands[:, 0].tolist() == [0.15, 0.6]
+
+
+def test_spread_profiles_shuffles_speed_and_noise_independently():
+    from ramms_fleet.collect import spread_profiles
+
+    profiles = spread_profiles(8, speed=(0.1, 0.8), range_noise=(0.0, 0.7), gyro_noise=(0.0, 0.07), seed=5)
+    speeds = sorted(p.cruise_speed for p in profiles)
+    np.testing.assert_allclose(speeds, np.linspace(0.1, 0.8, 8))
+    # One noise order for all sensors.
+    for p in profiles:
+        assert p.gyro_noise == pytest.approx(p.range_noise / 10)
+    assert [p.cruise_speed * 7 / 0.7 for p in profiles] != [p.range_noise * 10 + 1 for p in profiles]
+    assert spread_profiles(3) == [spread_profiles(1)[0]] * 3

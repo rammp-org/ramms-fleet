@@ -18,7 +18,7 @@ from ramms_fleet.spec import RANGE_SENSORS, RoverParams, WanderParams
 
 # Fixed per-feature scales from physical limits rather than dataset statistics,
 # so normalizing never needs information from other rovers.
-_FEATURE_SCALE = np.array(
+FEATURE_SCALE = np.array(
     [RoverParams.max_range] * len(RANGE_SENSORS)
     + [10.0, 10.0, 10.0]  # accel, m/s^2 (gravity included)
     + [3.0, 3.0, 3.0]  # gyro, rad/s
@@ -49,7 +49,7 @@ def load_rover(path: Path | str, history: int = 4, test_fraction: float = 0.2) -
     training samples in time.
     """
     data = np.load(path)
-    features = data["features"] / _FEATURE_SCALE
+    features = data["features"] / FEATURE_SCALE
     labels, valid, episode = data["label"], data["valid"], data["episode"]
     steps, dim = features.shape
 

@@ -104,24 +104,49 @@ local epoch for federated, 20 epochs for each baseline.
 time. It reads all rovers' test data, which a real deployment could not do; it
 is the experimenter's view.
 
-### First result
+### Results: 5 seeds, 50 rounds
 
-8 rovers, 600 simulated seconds each, clutter 0.1 to 1.2, seed 0, one run.
-Test AUPRC (positive rates 5 to 23%):
+`ramms-fleet-sweep --seeds 0 1 2 3 4 --rounds 50 --proximal-mu 0.1 --evaluate-every 5`
+(163 min on an 8-thread CPU). Every seed collects its own 8-rover dataset (600
+simulated seconds per rover, clutter 0.1 to 1.2). Federated runs use 1 local
+epoch per round; baselines train 50 epochs.
 
-| Rover | Clutter | Local only | Federated | Centralized |
-|------:|--------:|-----------:|----------:|------------:|
-| 0 | 0.10 | 0.904 | 0.889 | 0.927 |
-| 1 | 0.26 | 0.959 | 0.955 | 0.948 |
-| 2 | 0.41 | 0.753 | 0.883 | 0.925 |
-| 3 | 0.57 | 0.920 | 0.921 | 0.971 |
-| 4 | 0.73 | 0.874 | 0.894 | 0.935 |
-| 5 | 0.89 | 0.800 | 0.856 | 0.969 |
-| 6 | 1.04 | 0.775 | 0.798 | 0.922 |
-| 7 | 1.20 | 0.814 | 0.839 | 0.929 |
-| **Mean** | | **0.850** | **0.880** | **0.941** |
+Mean test AUPRC across rovers, mean ± std over seeds:
 
-Federated beats local-only on average, most in the cluttered arenas, but is
-still below centralized. Its evaluation AUPRC was still rising at round 20
-(0.858 at round 15, 0.884 at round 20), so more rounds should narrow the gap.
-Single seed; treat the differences as indicative.
+| Method | AUPRC |
+|---|---:|
+| Local only | 0.821 ± 0.044 |
+| FedProx (mu = 0.1) | 0.882 ± 0.026 |
+| FedAvg | 0.890 ± 0.023 |
+| Centralized | 0.907 ± 0.023 |
+
+Paired differences within a seed:
+
+| Comparison | Difference | Seeds in favour |
+|---|---:|---:|
+| FedAvg - local only | +0.068 ± 0.022 | 5 of 5 |
+| Centralized - FedAvg | +0.017 ± 0.003 | 5 of 5 |
+| FedProx - FedAvg | -0.008 ± 0.004 | 0 of 5 |
+
+- Federated training beats every rover training alone, in every seed, and
+  closes about 80% of the gap to pooling the data.
+- FedProx is slightly but consistently worse than FedAvg here. With one local
+  epoch per round, clients barely drift from the global model, so the proximal
+  term mostly slows learning. It should matter more with more local epochs or
+  stronger differences between rovers.
+- Federated evaluation AUPRC (mean over seeds) at rounds 10, 25, and 50:
+  FedAvg 0.774, 0.855, 0.889; FedProx 0.742, 0.841, 0.880. Still rising at
+  round 50, but slowly.
+
+Mean over seeds by rover:
+
+| Rover | Clutter | Local only | FedAvg | FedProx | Centralized |
+|------:|--------:|-----------:|-------:|--------:|------------:|
+| 0 | 0.10 | 0.878 | 0.917 | 0.915 | 0.924 |
+| 1 | 0.26 | 0.847 | 0.896 | 0.894 | 0.907 |
+| 2 | 0.41 | 0.760 | 0.856 | 0.847 | 0.883 |
+| 3 | 0.57 | 0.817 | 0.878 | 0.865 | 0.903 |
+| 4 | 0.73 | 0.803 | 0.886 | 0.873 | 0.877 |
+| 5 | 0.89 | 0.813 | 0.888 | 0.881 | 0.928 |
+| 6 | 1.04 | 0.842 | 0.886 | 0.874 | 0.901 |
+| 7 | 1.20 | 0.811 | 0.911 | 0.904 | 0.928 |

@@ -150,3 +150,30 @@ Mean over seeds by rover:
 | 5 | 0.89 | 0.813 | 0.888 | 0.881 | 0.928 |
 | 6 | 1.04 | 0.842 | 0.886 | 0.874 | 0.901 |
 | 7 | 1.20 | 0.811 | 0.911 | 0.904 | 0.928 |
+
+### Results: 5 local epochs, 10 rounds
+
+`ramms-fleet-sweep --seeds 0 1 2 3 4 --rounds 10 --local-epochs 5 --proximal-mus 0.01 0.1 1.0 --evaluate-every 2 --out results/sweep-e5`
+(87 min). Same datasets and total training as above (50 epochs per client),
+with a fifth of the communication rounds. The baselines reproduce exactly.
+
+| Method | AUPRC | Paired vs FedAvg | Seeds beating FedAvg |
+|---|---:|---:|---:|
+| Local only | 0.821 ± 0.044 | -0.067 ± 0.020 | 0 of 5 |
+| FedProx mu = 1.0 | 0.645 ± 0.048 | -0.244 ± 0.035 | 0 of 5 |
+| FedProx mu = 0.1 | 0.848 ± 0.037 | -0.041 ± 0.013 | 0 of 5 |
+| FedProx mu = 0.01 | 0.886 ± 0.027 | -0.003 ± 0.003 | 1 of 5 |
+| FedAvg | 0.889 ± 0.026 | | |
+| Centralized | 0.907 ± 0.023 | +0.018 ± 0.005 | 5 of 5 |
+
+- FedAvg with 5 local epochs and 10 rounds matches FedAvg with 1 epoch and 50
+  rounds (difference -0.001 ± 0.003 per seed), so this task tolerates 5x less
+  communication without losing accuracy.
+- FedProx does not help at any mu. The penalty grows with mu and, at 1.0, keeps
+  clients so close to the global model that 10 rounds are not enough (0.637
+  federated evaluation AUPRC at round 10). Client drift is not what limits
+  FedAvg here: clutter changes how often rovers collide, but the sensor
+  signature of an imminent collision is the same in every arena.
+- To make drift matter, the rovers need to differ in what a collision looks like,
+  for example different obstacle heights relative to the rangefinders, sensor
+  noise or mounting, or rover speed.

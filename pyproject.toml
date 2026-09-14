@@ -19,6 +19,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "ruff>=0.6"]
 video = ["imageio>=2.30", "imageio-ffmpeg>=0.5", "pillow>=10"]
+ramms = ["pyzmq>=25", "msgpack>=1.0"]
 
 [project.scripts]
 ramms-fleet-collect = "ramms_fleet.collect:main"

@@ -18,6 +18,7 @@ Compute was one 8-thread CPU.
 | 3 | Can communication rounds be cut? | 5x fewer rounds, same accuracy; FedProx no at any strength |
 | 4 | What happens when rovers really differ? | federation still wins everywhere; slow rovers gain most; fine-tuning hurts |
 | 5 | How much of the speed effect was the label? | most of it |
+| 6 | Does the pipeline run inside RAMMS? | yes; MuJoCo-trained models keep their ranking there |
 
 ## 1. First run
 
@@ -179,6 +180,25 @@ fine-tuning, and centralized training (5 seeds each, about 100 min,
 - Fine-tuning is roughly neutral in the speed condition (+0.003 ± 0.008) and
   still lowers AUPRC elsewhere.
 
+## 6. RAMMS backend, first collection
+
+8 rovers, 600 s, seed 0 settings (clutter only), collected inside RAMMS through
+URLab with `--backend ramms` (3.2 min, 3x real time). The models trained in
+MuJoCo for experiment 3 (seed 0) were then scored on this RAMMS data.
+
+| Model | On the RAMMS run | On its own MuJoCo test split |
+|---|---:|---:|
+| Local only | 0.810 | 0.877 |
+| FedAvg | 0.867 | 0.924 |
+| Centralized | 0.896 | 0.942 |
+
+- The ranking carries over to RAMMS. Scores drop by about 0.05, but the MuJoCo
+  test split is the tail of the same run the models trained on, while the RAMMS
+  run is entirely new, so part of the drop is not the simulator. Scoring on a
+  fresh MuJoCo run would separate the two.
+- Rangefinder readings are identical to standalone MuJoCo for the same pose, and
+  trajectories under identical commands differ by about 1 cm after 2 s.
+
 ## Limits
 
 - One narrow task that rangefinders make fairly easy, and one exploration
@@ -191,8 +211,7 @@ fine-tuning, and centralized training (5 seeds each, about 100 min,
 
 ## Next
 
-- Run the same rover in RAMMS over the URLab bridge, adding camera input and
-  crowds.
+- Train and federate on RAMMS data, then add camera input and crowds.
 - Look rover by rover at where the shared model hurts before trying heavier
   personalization (fewer fine-tuning epochs, shared body with per-rover heads,
   clustering rovers by speed).

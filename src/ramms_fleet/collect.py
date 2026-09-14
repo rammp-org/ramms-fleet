@@ -33,8 +33,18 @@ def collect(
     seed: int = 0,
     wander: WanderParams = WanderParams(),
     profiles: list[RoverProfile] | None = None,
+    backend: str = "mujoco",
+    ramms_address: str = "tcp://127.0.0.1:5559",
 ) -> dict:
-    fleet = MujocoFleet(configs, control_hz=control_hz, seed=seed, profiles=profiles)
+    if backend == "ramms":
+        # Imported lazily: the RAMMS backend needs pyzmq and msgpack (the [ramms] extra).
+        from ramms_fleet.ramms.fleet import RammsFleet
+
+        fleet = RammsFleet(configs, control_hz=control_hz, seed=seed, profiles=profiles, address=ramms_address)
+    elif backend == "mujoco":
+        fleet = MujocoFleet(configs, control_hz=control_hz, seed=seed, profiles=profiles)
+    else:
+        raise ValueError(f"unknown backend {backend!r}")
     speeds = np.array([p.cruise_speed for p in fleet.profiles])
     policy = WanderPolicy(fleet.num_rovers, fleet.dt, wander, seed=seed + 1, cruise_speeds=speeds)
     steps = round(seconds / fleet.dt)
@@ -67,6 +77,8 @@ def collect(
             obs = fleet.reset(list(tipped))
             policy.reset(tipped, obs)
     elapsed = time.perf_counter() - started
+    if hasattr(fleet, "close"):
+        fleet.close()
 
     horizon_steps = max(1, round(horizon / fleet.dt))
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -98,7 +110,7 @@ def collect(
         )
 
     meta = {
-        "backend": "mujoco",
+        "backend": backend,
         "seconds": seconds,
         "control_hz": control_hz,
         "dt": fleet.dt,
@@ -163,6 +175,10 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--control-hz", type=float, default=20.0)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument(
+        "--backend", choices=("mujoco", "ramms"), default="mujoco", help="ramms needs the editor running"
+    )
+    parser.add_argument("--ramms-address", default="tcp://127.0.0.1:5559", help="URLab bridge RPC address")
     args = parser.parse_args(argv)
 
     configs = spread_configs(args.rovers, args.clutter_min, args.clutter_max, args.seed)
@@ -183,6 +199,8 @@ def main(argv: list[str] | None = None) -> None:
         seed=args.seed,
         wander=WanderParams(avoid_gain=args.avoid_gain),
         profiles=profiles,
+        backend=args.backend,
+        ramms_address=args.ramms_address,
     )
 
     print(f"wrote {args.out} ({meta['sim_seconds_per_wall_second']:.0f}x real time)")

@@ -17,7 +17,8 @@ and the shared task is predicting their own collisions.
 | Federated training with a process per rover, baselines, seed sweeps | done | #2 |
 | Rovers with different speeds and sensor noise, fine-tuning, videos | done | #3 |
 | Distance-based collision labels | done | #4 |
-| RAMMS backend over the URLab bridge, with cameras and crowds | next | |
+| RAMMS backend over the URLab bridge | started: collection works | #5 |
+| Cameras and crowds in RAMMS | next | |
 
 Headline results (details and every table in [docs/results.md](docs/results.md)):
 
@@ -38,7 +39,7 @@ Python 3.10 or newer and [uv](https://docs.astral.sh/uv/).
 ```bash
 uv venv
 uv pip install torch --index-url https://download.pytorch.org/whl/cpu   # optional: skip the CUDA wheels
-uv pip install -e ".[dev,video]"                                         # video: rendering extras
+uv pip install -e ".[dev,video,ramms]"                                   # video: rendering; ramms: RAMMS backend
 .venv/bin/pytest
 ```
 
@@ -191,6 +192,44 @@ training data (`<name>+ft`).
 Evaluation reads every rover's test data, which a real deployment could not;
 it is the experimenter's view, outside the federated protocol.
 
+### RAMMS backend
+
+`--backend ramms` on `ramms-fleet-collect` simulates the fleet inside a running
+RAMMS editor instead of standalone MuJoCo, with the same policy, noise, and
+dataset format:
+
+```bash
+.venv/bin/ramms-fleet-collect --backend ramms --rovers 8 --seconds 600 --out data/ramms/run0
+```
+
+`RammsFleet` (`ramms/fleet.py`) talks to URLab's RPC bridge (`ramms/bridge.py`,
+ZMQ and msgpack on port 5559, `--ramms-address`). For each run it:
+
+1. exports each rover's arena as standalone MJCF (`build_cell_xml`: rover.xml
+   plus walls, obstacles, and a finite floor box) to `results/ramms-scene/`
+2. loads or creates the `/Game/Levels/FleetArena` level, adds a MuJoCo manager,
+   replaces any earlier fleet actors, imports each arena, spawns it 0.5 m apart,
+   and saves the level
+3. starts Play In Editor, switches URLab to direct (client-clocked) stepping at a
+   5 ms timestep, and claims control of every rover
+4. resets with `reset` plus `set_qpos` per rover, and steps all rovers with one
+   `step` request per control step
+
+What to know:
+
+- The RAMMS editor must be running with the URLab bridge enabled. Imported
+  arenas land in the RAMMS checkout under `Content/MuJoCoImports/` and the level
+  in `Content/Levels/FleetArena.umap`; neither is committed there.
+- Rangefinders match standalone MuJoCo exactly for the same pose; driving
+  diverges by about 1 cm and 0.04 rad over 2 s, since RAMMS embeds MuJoCo 3.11.
+- 8 rovers collect at about 3x real time, limited by the editor.
+- URLab's `reset` cannot set free-joint poses, so poses go through `set_qpos`,
+  which does not zero velocities: a single tipped rover is reset with its last
+  velocity.
+- URLab binds its bridge and camera ports on all network interfaces.
+- `RAMMS_BRIDGE=tcp://127.0.0.1:5559 pytest tests/test_ramms_backend.py` runs the
+  integration tests against a live editor; they are skipped otherwise.
+
 ### Videos
 
 ```bash
@@ -210,7 +249,7 @@ drawn from the true geometry.
 
 | Command | Purpose | Key options |
 |---|---|---|
-| `ramms-fleet-collect` | simulate a fleet and write per-rover datasets | `--rovers`, `--seconds`, `--clutter-min/max`, `--speed`, `--range/accel/gyro-noise`, `--avoid-gain`, `--seed` |
+| `ramms-fleet-collect` | simulate a fleet and write per-rover datasets | `--rovers`, `--seconds`, `--clutter-min/max`, `--speed`, `--range/accel/gyro-noise`, `--avoid-gain`, `--seed`, `--backend mujoco\|ramms` |
 | `ramms-fleet-view` | watch the fleet in the MuJoCo viewer | `--rovers`, `--clutter-min/max`, `--speed` (playback rate, not rover speed) |
 | `ramms-fleet-baseline` | train local-only and centralized models | `--epochs`, `--label`, `--horizon-m`, `--seed` |
 | `ramms-fleet-federate` | run Flower with a process per rover | `--rounds`, `--local-epochs`, `--proximal-mu`, `--evaluate-every`, `--name`, `--label`, `--port-base` |
@@ -252,6 +291,7 @@ src/ramms_fleet/
   sweep.py           ramms-fleet-sweep and ramms-fleet-compare
   view.py            ramms-fleet-view
   render.py          ramms-fleet-render
+  ramms/             RAMMS backend: URLab bridge client and RammsFleet
 scripts/             experiment scripts
 docs/results.md      every experiment and its results
 tests/

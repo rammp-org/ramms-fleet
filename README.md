@@ -209,3 +209,32 @@ each rover's own data. 10 rounds × 5 local epochs throughout.
 Videos (`ramms-fleet-render`) show the fleet colored by predicted collision
 risk and local-only against FedAvg for the slowest, fastest, and noisiest
 rovers; the script writes them to `results/overnight/videos/`.
+
+### Results: distance-based labels
+
+`scripts/distance_labels.sh` (100 min). The overnight time label (collision
+within 0.5 s) covers four times more ground for the fastest rover than the
+slowest. `--label distance --horizon-m 0.15` relabels the same datasets as a
+collision within 0.15 m of travel (0.5 s at the default 0.3 m/s) and reruns
+local-only, FedAvg, fine-tuning, and centralized training (5 seeds each).
+
+| Condition | Label | Local only | FedAvg | FedAvg + fine-tune | Centralized | Centralized - FedAvg |
+|---|---|---:|---:|---:|---:|---:|
+| Clutter only | time | 0.821 | 0.889 | 0.874 | 0.907 | +0.018 ± 0.005 |
+| Clutter only | distance | 0.873 | 0.923 | 0.915 | 0.955 | +0.031 ± 0.015 |
+| Clutter + speed | time | 0.827 | 0.871 | 0.862 | 0.906 | +0.034 ± 0.015 |
+| Clutter + speed | distance | 0.864 | 0.897 | 0.900 | 0.935 | +0.038 ± 0.009 |
+| Clutter + noise | time | 0.769 | 0.833 | 0.818 | 0.839 | +0.005 ± 0.010 |
+| Clutter + noise | distance | 0.857 | 0.903 | 0.892 | 0.913 | +0.011 ± 0.012 |
+| All three | time | 0.755 | 0.816 | 0.802 | 0.825 | +0.008 ± 0.008 |
+| All three | distance | 0.794 | 0.857 | 0.845 | 0.871 | +0.014 ± 0.006 |
+
+- Most of the speed effect was the label. Adding speed differences widened the
+  gap to centralized training by +0.016 with time labels but only +0.006 with
+  distance labels, within about one standard deviation.
+- FedAvg still beats local-only in all 20 seeds, and slow rovers still gain the
+  most (combined condition: local-only 0.624, FedAvg 0.759).
+- Distance labels raise every score, since rangefinder readings map more
+  directly to distance than to time, so compare methods within one label type.
+- Fine-tuning is roughly neutral in the speed condition (+0.003 ± 0.008) and
+  still lowers AUPRC elsewhere.

@@ -177,3 +177,35 @@ with a fifth of the communication rounds. The baselines reproduce exactly.
 - To make drift matter, the rovers need to differ in what a collision looks like,
   for example different obstacle heights relative to the rangefinders, sensor
   noise or mounting, or rover speed.
+
+### Results: rovers that differ
+
+`scripts/overnight_heterogeneity.sh` (7 h). Rovers also get their own cruise
+speed (0.15 to 0.60 m/s) and sensor noise (rangefinder σ up to 0.20 m, accel
+2 m/s², gyro 0.3 rad/s), shuffled across rovers independently of clutter.
+`FedAvg + fine-tune` personalizes the finished FedAvg model with 5 epochs on
+each rover's own data. 10 rounds × 5 local epochs throughout.
+
+| Condition | Seeds | Local only | FedAvg | FedAvg + fine-tune | Centralized |
+|---|---:|---:|---:|---:|---:|
+| Clutter only | 5 | 0.821 ± 0.044 | 0.889 ± 0.026 | 0.874 ± 0.029 | 0.907 ± 0.023 |
+| Clutter + speed | 5 | 0.827 ± 0.033 | 0.871 ± 0.026 | 0.862 ± 0.036 | 0.906 ± 0.028 |
+| Clutter + noise | 5 | 0.769 ± 0.026 | 0.833 ± 0.022 | 0.818 ± 0.027 | 0.839 ± 0.023 |
+| All three | 5 | 0.755 ± 0.030 | 0.816 ± 0.008 | 0.802 ± 0.014 | 0.825 ± 0.009 |
+| All three, 16 rovers | 3 | 0.771 ± 0.004 | 0.827 ± 0.026 | 0.814 ± 0.022 | 0.844 ± 0.019 |
+
+- FedAvg beats local-only in all 23 seeds (+0.044 to +0.067).
+- Speed differences open the widest gap to centralized training (0.034 against
+  0.018 with clutter alone): with a time-based label horizon, the same
+  rangefinder reading means different things to a fast and a slow rover.
+  Sensor noise alone barely separates them (0.005).
+- Slow rovers gain the most. They collide 7.6 times per minute against 17.6 for
+  the fastest third, so their own data has few positives: local-only 0.469,
+  FedAvg 0.620, centralized 0.609 (all three differences, 8 rovers).
+- Fine-tuning lowers mean AUPRC in every condition (-0.009 to -0.015): it
+  helps fast rovers slightly but overfits the few positives of slow ones.
+- FedProx again never beats FedAvg beyond seed noise.
+
+Videos (`ramms-fleet-render`) show the fleet colored by predicted collision
+risk and local-only against FedAvg for the slowest, fastest, and noisiest
+rovers; the script writes them to `results/overnight/videos/`.

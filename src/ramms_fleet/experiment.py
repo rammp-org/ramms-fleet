@@ -1,0 +1,155 @@
+"""Baselines and evaluation for the federated collision-prediction experiment.
+
+`ramms-fleet-baseline` trains the two reference points in one process:
+- local: every rover trains its own model on only its own data
+- centralized: one model on all rovers' data pooled (an upper bound that
+  federated training tries to approach without pooling)
+
+`ramms-fleet-eval` scores every trained model on every rover's held-out test
+split. It reads all rovers' test data, which a real deployment could not do;
+it is the experimenter's view, outside the federated protocol.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+from pathlib import Path
+
+import numpy as np
+import torch
+
+from ramms_fleet.learning import RoverData, evaluate, load_rover, make_model, train
+
+
+def rover_files(data_dir: Path) -> list[Path]:
+    files = sorted(data_dir.glob("rover_*.npz"))
+    if not files:
+        raise SystemExit(f"no rover_*.npz files in {data_dir}")
+    return files
+
+
+def save_model(path: Path, model: torch.nn.Module, input_dim: int, hidden: int, history: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save({"state_dict": model.state_dict(), "input_dim": input_dim, "hidden": hidden, "history": history}, path)
+
+
+def load_model(path: Path) -> tuple[torch.nn.Module, int]:
+    saved = torch.load(path, weights_only=True)
+    model = make_model(saved["input_dim"], saved["hidden"])
+    model.load_state_dict(saved["state_dict"])
+    return model, saved["history"]
+
+
+def initial_model(input_dim: int, hidden: int, seed: int) -> torch.nn.Module:
+    """Every method starts from the same weights for a given seed."""
+    torch.manual_seed(seed)
+    return make_model(input_dim, hidden)
+
+
+def run_baselines(data_dir: Path, out_dir: Path, epochs: int, hidden: int, history: int, lr: float, seed: int) -> None:
+    files = rover_files(data_dir)
+    datasets = [load_rover(f, history) for f in files]
+    input_dim = datasets[0].input_dim
+
+    for f, data in zip(files, datasets, strict=True):
+        model = initial_model(input_dim, hidden, seed)
+        loss = train(model, data.x_train, data.y_train, epochs=epochs, lr=lr, seed=seed)
+        save_model(out_dir / "local" / f"{f.stem}.pt", model, input_dim, hidden, history)
+        print(f"local {f.stem}: {len(data.x_train)} samples, final loss {loss:.4f}")
+
+    x = np.concatenate([d.x_train for d in datasets])
+    y = np.concatenate([d.y_train for d in datasets])
+    model = initial_model(input_dim, hidden, seed)
+    loss = train(model, x, y, epochs=epochs, lr=lr, seed=seed)
+    save_model(out_dir / "centralized" / "model.pt", model, input_dim, hidden, history)
+    print(f"centralized: {len(x)} samples, final loss {loss:.4f}")
+
+
+def baseline_main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Train local-only and centralized baselines.")
+    parser.add_argument("--data", type=Path, required=True, help="run directory from ramms-fleet-collect")
+    parser.add_argument("--out", type=Path, required=True, help="results directory")
+    parser.add_argument("--epochs", type=int, default=20, help="match federated rounds x local epochs")
+    parser.add_argument("--hidden", type=int, default=64)
+    parser.add_argument("--history", type=int, default=4)
+    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--seed", type=int, default=0)
+    args = parser.parse_args(argv)
+    run_baselines(args.data, args.out, args.epochs, args.hidden, args.history, args.lr, args.seed)
+
+
+def _score(model: torch.nn.Module, data: RoverData) -> dict[str, float]:
+    return evaluate(model, data.x_test, data.y_test)
+
+
+def _nanmean(values: list[float]) -> float:
+    finite = [v for v in values if not math.isnan(v)]
+    return float(np.mean(finite)) if finite else float("nan")
+
+
+def run_evaluation(data_dir: Path, results_dir: Path) -> dict:
+    files = rover_files(data_dir)
+    meta = json.loads((data_dir / "meta.json").read_text())
+    clutter = {r["rover"]: r["clutter"] for r in meta["rovers"]}
+    cache: dict[int, dict[int, RoverData]] = {}
+
+    def data_for(history: int) -> dict[int, RoverData]:
+        if history not in cache:
+            cache[history] = {i: load_rover(f, history) for i, f in enumerate(files)}
+        return cache[history]
+
+    report: dict = {"rovers": [], "summary": {}}
+    # Every subdirectory holding a model.pt is a method trained on all rovers
+    # (centralized, federated, fedprox, ...); local/ holds one model per rover.
+    shared = sorted(p.parent for p in results_dir.glob("*/model.pt"))
+    shared_models = {p.name: load_model(p / "model.pt") for p in shared}
+
+    local_own, local_others = [], []
+    per_method: dict[str, list[float]] = {name: [] for name in shared_models}
+    for i, f in enumerate(files):
+        row: dict = {"rover": i, "clutter": clutter.get(i)}
+        for name, (model, history) in shared_models.items():
+            row[name] = _score(model, data_for(history)[i])
+            per_method[name].append(row[name]["auprc"])
+
+        local_path = results_dir / "local" / f"{f.stem}.pt"
+        if local_path.exists():
+            model, history = load_model(local_path)
+            data = data_for(history)
+            row["local"] = _score(model, data[i])
+            others = [_score(model, data[j])["auprc"] for j in data if j != i]
+            row["local_on_other_rovers_auprc"] = _nanmean(others)
+            local_own.append(row["local"]["auprc"])
+            local_others.append(row["local_on_other_rovers_auprc"])
+        report["rovers"].append(row)
+
+    for name, values in per_method.items():
+        report["summary"][f"{name}_mean_auprc"] = _nanmean(values)
+    if local_own:
+        report["summary"]["local_mean_auprc"] = _nanmean(local_own)
+        report["summary"]["local_on_other_rovers_mean_auprc"] = _nanmean(local_others)
+
+    (results_dir / "evaluation.json").write_text(json.dumps(report, indent=2))
+    return report
+
+
+def eval_main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Score trained models on every rover's test split.")
+    parser.add_argument("--data", type=Path, required=True)
+    parser.add_argument("--results", type=Path, required=True)
+    args = parser.parse_args(argv)
+    report = run_evaluation(args.data, args.results)
+
+    first = report["rovers"][0]
+    methods = [m for m in first if isinstance(first[m], dict)]
+    print("Test AUPRC per rover (higher is better; positive rate shown for scale)")
+    print(f"{'rover':>5} {'clutter':>7} {'pos rate':>8} " + " ".join(f"{m:>11}" for m in methods))
+    for row in report["rovers"]:
+        pos_rate = row[methods[0]]["positive_rate"] if methods else float("nan")
+        cells = " ".join(f"{row[m]['auprc']:>11.3f}" for m in methods)
+        print(f"{row['rover']:>5} {row['clutter']:>7.2f} {pos_rate:>8.3f} {cells}")
+    for key, value in report["summary"].items():
+        print(f"{key}: {value:.3f}")
+    print(f"wrote {args.results / 'evaluation.json'}")

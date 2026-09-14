@@ -10,8 +10,10 @@ readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
 dependencies = [
+    "flwr>=1.30,<2",
     "mujoco>=3.3.0",
     "numpy>=1.24.0",
+    "torch>=2.4",
 ]
 
 [project.optional-dependencies]
@@ -20,12 +22,36 @@ dev = ["pytest>=8.0", "ruff>=0.6"]
 [project.scripts]
 ramms-fleet-collect = "ramms_fleet.collect:main"
 ramms-fleet-view = "ramms_fleet.view:main"
+ramms-fleet-baseline = "ramms_fleet.experiment:baseline_main"
+ramms-fleet-eval = "ramms_fleet.experiment:eval_main"
+ramms-fleet-federate = "ramms_fleet.federate:main"
+ramms-fleet-sweep = "ramms_fleet.sweep:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
 ramms_fleet = ["assets/*.xml"]
+
+[tool.flwr.app]
+publisher = "rammp-org"
+
+[tool.flwr.app.components]
+serverapp = "ramms_fleet.fl.server_app:app"
+clientapp = "ramms_fleet.fl.client_app:app"
+
+# Defaults; ramms-fleet-federate overrides these per run.
+[tool.flwr.app.config]
+num-rovers = 8
+num-server-rounds = 20
+local-epochs = 1
+lr = 0.001
+hidden = 64
+history = 4
+proximal-mu = 0.0
+evaluate-every = 1
+seed = 0
+results-dir = "results/federated"
 
 [tool.ruff]
 line-length = 120
@@ -36,7 +62,7 @@ select = ["E", "F", "I", "B", "UP"]
 
 [tool.ruff.lint.flake8-bugbear]
 # Frozen dataclasses are safe as argument defaults.
-extend-immutable-calls = ["ramms_fleet.world.ArenaLayout", "ramms_fleet.fleet.RoverParams", "ramms_fleet.policy.WanderParams"]
+extend-immutable-calls = ["ramms_fleet.world.ArenaLayout", "ramms_fleet.spec.RoverParams", "ramms_fleet.spec.WanderParams"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

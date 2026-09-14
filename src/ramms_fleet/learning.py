@@ -14,6 +14,7 @@ import numpy as np
 import torch
 from torch import nn
 
+from ramms_fleet.labels import distance_labels
 from ramms_fleet.spec import RANGE_SENSORS, RoverParams, WanderParams
 
 # Fixed per-feature scales from physical limits rather than dataset statistics,
@@ -40,17 +41,36 @@ class RoverData:
         return self.x_train.shape[1]
 
 
-def load_rover(path: Path | str, history: int = 4, test_fraction: float = 0.2) -> RoverData:
+LABELS = ("time", "distance")
+
+
+def load_rover(
+    path: Path | str,
+    history: int = 4,
+    test_fraction: float = 0.2,
+    label: str = "time",
+    horizon_m: float = 0.15,
+) -> RoverData:
     """Loads one rover's file as windowed samples with a chronological split.
 
     A sample at step t stacks the scaled features of steps t-history+1..t, all in
     the same episode, and is kept only if step t is valid. The last
     `test_fraction` of the run is held out, so test samples never sit next to
     training samples in time.
+
+    `label="time"` uses the labels stored at collection (collision within the
+    run's time horizon); `label="distance"` relabels from the recorded poses:
+    collision within `horizon_m` metres of travel.
     """
     data = np.load(path)
     features = data["features"] / FEATURE_SCALE
-    labels, valid, episode = data["label"], data["valid"], data["episode"]
+    valid, episode = data["valid"], data["episode"]
+    if label == "time":
+        labels = data["label"]
+    elif label == "distance":
+        labels = distance_labels(data["bump"], episode, data["pose"], horizon_m)
+    else:
+        raise ValueError(f"label must be one of {LABELS}, not {label!r}")
     steps, dim = features.shape
 
     ends = np.arange(history - 1, steps)

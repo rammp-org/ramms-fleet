@@ -16,29 +16,12 @@ from pathlib import Path
 import numpy as np
 
 from ramms_fleet.fleet import MujocoFleet
+from ramms_fleet.labels import collision_labels
 from ramms_fleet.policy import CRUISE, WanderPolicy
 from ramms_fleet.spec import FEATURES, RANGE_SENSORS, RoverParams, RoverProfile, WanderParams
 from ramms_fleet.world import EnvConfig
 
 __all__ = ["FEATURES", "collect", "collision_labels", "spread_configs", "spread_profiles"]
-
-
-def collision_labels(bump: np.ndarray, episode: np.ndarray, horizon_steps: int) -> np.ndarray:
-    """Marks step t positive when a bump onset occurs in (t, t + horizon_steps].
-
-    Onsets are rising edges of `bump` inside one episode; labels never look
-    across an episode boundary.
-    """
-    steps = len(bump)
-    previous = np.concatenate([[False], bump[:-1]])
-    same_episode = np.concatenate([[False], episode[1:] == episode[:-1]])
-    onset = bump & ~(previous & same_episode)
-    labels = np.zeros(steps, dtype=bool)
-    for t in np.flatnonzero(onset):
-        start = max(0, t - horizon_steps)
-        window = slice(start, t)
-        labels[window] |= episode[window] == episode[t]
-    return labels
 
 
 def collect(

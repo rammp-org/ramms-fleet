@@ -20,7 +20,12 @@ def _setup(msg: Message, context: Context):
     # SuperNodes run several ClientApp processes side by side on one machine.
     torch.set_num_threads(1)
     cfg = context.run_config
-    data = load_rover(str(context.node_config["data-path"]), history=int(cfg["history"]))
+    data = load_rover(
+        str(context.node_config["data-path"]),
+        history=int(cfg["history"]),
+        label=str(cfg["label"]),
+        horizon_m=float(cfg["horizon-m"]),
+    )
     model = make_model(data.input_dim, int(cfg["hidden"]))
     model.load_state_dict(msg.content["arrays"].to_torch_state_dict())
     return cfg, data, model

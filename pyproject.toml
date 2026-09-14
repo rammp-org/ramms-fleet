@@ -53,6 +53,8 @@ hidden = 64
 history = 4
 proximal-mu = 0.0
 evaluate-every = 1
+label = "time"
+horizon-m = 0.15
 seed = 0
 results-dir = "results/federated"
 

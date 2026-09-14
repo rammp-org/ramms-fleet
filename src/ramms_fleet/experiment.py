@@ -24,7 +24,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from ramms_fleet.learning import RoverData, evaluate, load_rover, make_model, train
+from ramms_fleet.learning import LABELS, RoverData, evaluate, load_rover, make_model, train
 
 
 def rover_files(data_dir: Path) -> list[Path]:
@@ -52,9 +52,19 @@ def initial_model(input_dim: int, hidden: int, seed: int) -> torch.nn.Module:
     return make_model(input_dim, hidden)
 
 
-def run_baselines(data_dir: Path, out_dir: Path, epochs: int, hidden: int, history: int, lr: float, seed: int) -> None:
+def run_baselines(
+    data_dir: Path,
+    out_dir: Path,
+    epochs: int,
+    hidden: int,
+    history: int,
+    lr: float,
+    seed: int,
+    label: str = "time",
+    horizon_m: float = 0.15,
+) -> None:
     files = rover_files(data_dir)
-    datasets = [load_rover(f, history) for f in files]
+    datasets = [load_rover(f, history, label=label, horizon_m=horizon_m) for f in files]
     input_dim = datasets[0].input_dim
 
     for f, data in zip(files, datasets, strict=True):
@@ -80,8 +90,12 @@ def baseline_main(argv: list[str] | None = None) -> None:
     parser.add_argument("--history", type=int, default=4)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--label", choices=LABELS, default="time", help="time horizon from collection, or distance")
+    parser.add_argument("--horizon-m", type=float, default=0.15, help="travel horizon for --label distance")
     args = parser.parse_args(argv)
-    run_baselines(args.data, args.out, args.epochs, args.hidden, args.history, args.lr, args.seed)
+    run_baselines(
+        args.data, args.out, args.epochs, args.hidden, args.history, args.lr, args.seed, args.label, args.horizon_m
+    )
 
 
 def _score(model: torch.nn.Module, data: RoverData) -> dict[str, float]:
@@ -93,7 +107,14 @@ def _nanmean(values: list[float]) -> float:
     return float(np.mean(finite)) if finite else float("nan")
 
 
-def run_evaluation(data_dir: Path, results_dir: Path, finetune_epochs: int = 0, lr: float = 1e-3) -> dict:
+def run_evaluation(
+    data_dir: Path,
+    results_dir: Path,
+    finetune_epochs: int = 0,
+    lr: float = 1e-3,
+    label: str = "time",
+    horizon_m: float = 0.15,
+) -> dict:
     files = rover_files(data_dir)
     meta = json.loads((data_dir / "meta.json").read_text())
     rover_meta = {r["rover"]: r for r in meta["rovers"]}
@@ -102,7 +123,7 @@ def run_evaluation(data_dir: Path, results_dir: Path, finetune_epochs: int = 0, 
 
     def data_for(history: int) -> dict[int, RoverData]:
         if history not in cache:
-            cache[history] = {i: load_rover(f, history) for i, f in enumerate(files)}
+            cache[history] = {i: load_rover(f, history, label=label, horizon_m=horizon_m) for i, f in enumerate(files)}
         return cache[history]
 
     report: dict = {"rovers": [], "summary": {}}
@@ -152,8 +173,12 @@ def eval_main(argv: list[str] | None = None) -> None:
     parser.add_argument("--data", type=Path, required=True)
     parser.add_argument("--results", type=Path, required=True)
     parser.add_argument("--finetune-epochs", type=int, default=0, help="personalize federated models on each rover")
+    parser.add_argument("--label", choices=LABELS, default="time")
+    parser.add_argument("--horizon-m", type=float, default=0.15)
     args = parser.parse_args(argv)
-    report = run_evaluation(args.data, args.results, finetune_epochs=args.finetune_epochs)
+    report = run_evaluation(
+        args.data, args.results, finetune_epochs=args.finetune_epochs, label=args.label, horizon_m=args.horizon_m
+    )
 
     first = report["rovers"][0]
     methods = [m for m in first if isinstance(first[m], dict)]

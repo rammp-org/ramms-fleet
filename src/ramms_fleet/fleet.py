@@ -15,10 +15,10 @@ from dataclasses import dataclass
 import mujoco
 import numpy as np
 
-from ramms_fleet.spec import RANGE_ANGLES_DEG, RANGE_SENSORS, RoverParams
+from ramms_fleet.spec import RANGE_ANGLES_DEG, RANGE_SENSORS, RoverParams, RoverProfile
 from ramms_fleet.world import ROVER_PREFIX, ArenaLayout, Cell, EnvConfig, build_world
 
-__all__ = ["RANGE_ANGLES_DEG", "RANGE_SENSORS", "FleetObs", "MujocoFleet", "RoverParams"]
+__all__ = ["RANGE_ANGLES_DEG", "RANGE_SENSORS", "FleetObs", "MujocoFleet", "RoverParams", "RoverProfile"]
 
 _SENSOR_DISABLE_BIT = int(mujoco.mjtDisableBit.mjDSBL_SENSOR)
 
@@ -66,7 +66,11 @@ class MujocoFleet:
         layout: ArenaLayout = ArenaLayout(),
         params: RoverParams = RoverParams(),
         shared_world: bool = False,
+        profiles: list[RoverProfile] | None = None,
     ):
+        self.profiles = profiles or [RoverProfile()] * len(configs)
+        if len(self.profiles) != len(configs):
+            raise ValueError(f"{len(self.profiles)} profiles for {len(configs)} rovers")
         self.worlds: list[tuple[mujoco.MjModel, mujoco.MjData]] = []
         self.rovers: list[_RoverSim] = []
         groups = [configs] if shared_world else [[config] for config in configs]
@@ -83,6 +87,11 @@ class MujocoFleet:
         self.substeps = max(1, round(1.0 / (control_hz * timestep)))
         self.dt = self.substeps * timestep
         self._rng = np.random.default_rng(seed)
+        # A separate stream so noise-free fleets draw exactly as before.
+        self._noise_rng = np.random.default_rng([seed, 1])
+        self._range_noise = np.array([p.range_noise for p in self.profiles])
+        self._accel_noise = np.array([p.accel_noise for p in self.profiles])
+        self._gyro_noise = np.array([p.gyro_noise for p in self.profiles])
 
     def reset(self, rovers: list[int] | None = None) -> FleetObs:
         """Places rovers at random clear poses in their cells, at rest."""
@@ -148,6 +157,15 @@ class MujocoFleet:
             # xmat[8]: z component of the chassis up axis in the world frame.
             upright[i] = r.data.xmat[r.body, 8] > 0.5
         ranges[(ranges < 0) | (ranges > self.params.max_range)] = self.params.max_range
+        # Sensor noise corrupts what the rover observes (and so what it records
+        # and how it drives); the bumper and pose stay exact.
+        if self._range_noise.any():
+            ranges += self._range_noise[:, None] * self._noise_rng.standard_normal(ranges.shape)
+            np.clip(ranges, 0.0, self.params.max_range, out=ranges)
+        if self._accel_noise.any():
+            accel += self._accel_noise[:, None] * self._noise_rng.standard_normal(accel.shape)
+        if self._gyro_noise.any():
+            gyro += self._gyro_noise[:, None] * self._noise_rng.standard_normal(gyro.shape)
         return FleetObs(
             ranges=ranges, accel=accel, gyro=gyro, wheel_vel=wheel_vel, bump=bump, pose=pose, upright=upright
         )

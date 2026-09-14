@@ -18,8 +18,18 @@ CRUISE, REVERSE, SPIN = 0, 1, 2
 
 
 class WanderPolicy:
-    def __init__(self, num_rovers: int, dt: float, params: WanderParams = WanderParams(), seed: int = 0):
+    def __init__(
+        self,
+        num_rovers: int,
+        dt: float,
+        params: WanderParams = WanderParams(),
+        seed: int = 0,
+        cruise_speeds: np.ndarray | None = None,
+    ):
         self.params = params
+        self.cruise_speeds = (
+            np.full(num_rovers, params.cruise_speed) if cruise_speeds is None else np.asarray(cruise_speeds, float)
+        )
         self.dt = dt
         self._rng = np.random.default_rng(seed)
         self.mode = np.full(num_rovers, CRUISE)
@@ -71,7 +81,7 @@ class WanderPolicy:
 
         commands = np.zeros((n, 2))
         cruise = self.mode == CRUISE
-        commands[cruise, 0] = p.cruise_speed
+        commands[cruise, 0] = self.cruise_speeds[cruise]
         commands[cruise, 1] = self._turn[cruise] + avoid[cruise]
         commands[self.mode == REVERSE, 0] = -p.reverse_speed
         spin = self.mode == SPIN

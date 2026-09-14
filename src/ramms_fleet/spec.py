@@ -39,6 +39,20 @@ class RoverParams:
 
 
 @dataclass(frozen=True)
+class RoverProfile:
+    """Per-rover hardware and behaviour differences. The defaults are the ideal rover."""
+
+    cruise_speed: float = 0.3
+    """m/s while wandering."""
+    range_noise: float = 0.0
+    """Standard deviation of Gaussian rangefinder noise, metres."""
+    accel_noise: float = 0.0
+    """Standard deviation of accelerometer noise per axis, m/s^2."""
+    gyro_noise: float = 0.0
+    """Standard deviation of gyro noise per axis, rad/s."""
+
+
+@dataclass(frozen=True)
 class WanderParams:
     cruise_speed: float = 0.3
     reverse_speed: float = 0.15

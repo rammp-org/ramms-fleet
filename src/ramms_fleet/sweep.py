@@ -61,11 +61,21 @@ def run_seed(seed: int, args: argparse.Namespace) -> Path:
     )
     _run(
         f"seed {seed} baselines",
-        [BIN / "ramms-fleet-baseline", "--data", data, "--out", results, "--epochs", args.rounds, "--seed", seed],
+        [
+            BIN / "ramms-fleet-baseline",
+            "--data",
+            data,
+            "--out",
+            results,
+            "--epochs",
+            args.rounds * args.local_epochs,
+            "--seed",
+            seed,
+        ],
         logs / "baseline.log",
         results / "centralized" / "model.pt",
     )
-    for name, mu in (("fedavg", 0.0), ("fedprox", args.proximal_mu)):
+    for name, mu in federated_methods(args.proximal_mus):
         _run(
             f"seed {seed} {name}",
             [
@@ -78,6 +88,8 @@ def run_seed(seed: int, args: argparse.Namespace) -> Path:
                 name,
                 "--rounds",
                 args.rounds,
+                "--local-epochs",
+                args.local_epochs,
                 "--proximal-mu",
                 mu,
                 "--evaluate-every",
@@ -100,6 +112,13 @@ def run_seed(seed: int, args: argparse.Namespace) -> Path:
     return results
 
 
+def federated_methods(proximal_mus: list[float]) -> list[tuple[str, float]]:
+    """FedAvg plus one FedProx run per mu; a single mu keeps the plain name `fedprox`."""
+    if len(proximal_mus) == 1:
+        return [("fedavg", 0.0), ("fedprox", proximal_mus[0])]
+    return [("fedavg", 0.0)] + [(f"fedprox-mu{mu:g}", mu) for mu in proximal_mus]
+
+
 def _stats(values: list[float]) -> dict[str, float]:
     finite = np.array([v for v in values if not math.isnan(v)])
     std = float(finite.std(ddof=1)) if len(finite) > 1 else float("nan")
@@ -115,7 +134,9 @@ def summarize(out: Path, seeds: list[int]) -> dict:
         m: [float(np.nanmean([row[m]["auprc"] for row in reports[s]["rovers"]])) for s in seeds] for m in methods
     }
     summary: dict = {"seeds": seeds, "methods": {m: _stats(v) for m, v in per_seed.items()}, "paired": {}}
-    for a, b in (("fedavg", "local"), ("fedprox", "local"), ("fedprox", "fedavg"), ("centralized", "fedavg")):
+    fedprox = [m for m in methods if m.startswith("fedprox")]
+    pairs = [("fedavg", "local"), ("centralized", "fedavg")] + [(m, "fedavg") for m in fedprox]
+    for a, b in pairs:
         if a in per_seed and b in per_seed:
             summary["paired"][f"{a} - {b}"] = _stats([x - y for x, y in zip(per_seed[a], per_seed[b], strict=True)])
 
@@ -131,7 +152,7 @@ def summarize(out: Path, seeds: list[int]) -> dict:
     ]
 
     curves = {}
-    for name in ("fedavg", "fedprox"):
+    for name in [m for m in methods if m.startswith("fed")]:
         by_round: dict[int, list[float]] = {}
         for s in seeds:
             path = out / f"seed_{s}" / name / "rounds.json"
@@ -148,20 +169,21 @@ def summarize(out: Path, seeds: list[int]) -> dict:
 
 def print_summary(summary: dict) -> None:
     methods = list(summary["methods"])
+    width = max(11, *(len(m) for m in methods))
     print(f"\nMean test AUPRC across rovers, {len(summary['seeds'])} seeds (mean ± std across seeds)")
     for m in methods:
         s = summary["methods"][m]
-        print(f"  {m:>12}: {s['mean']:.3f} ± {s['std']:.3f}")
+        print(f"  {m:>{width}}: {s['mean']:.3f} ± {s['std']:.3f}")
     print("Paired differences (same seed)")
     for k, s in summary["paired"].items():
-        print(f"  {k:>22}: {s['mean']:+.3f} ± {s['std']:.3f}")
+        print(f"  {k:>{2 * width + 3}}: {s['mean']:+.3f} ± {s['std']:.3f}")
     print("By rover (mean over seeds)")
-    print(f"  {'rover':>5} {'clutter':>7} " + " ".join(f"{m:>11}" for m in methods))
+    print(f"  {'rover':>5} {'clutter':>7} " + " ".join(f"{m:>{width}}" for m in methods))
     for row in summary["by_rover"]:
-        print(f"  {row['rover']:>5} {row['clutter']:>7.2f} " + " ".join(f"{row[m]:>11.3f}" for m in methods))
+        print(f"  {row['rover']:>5} {row['clutter']:>7.2f} " + " ".join(f"{row[m]:>{width}.3f}" for m in methods))
     print("Federated evaluation AUPRC by round (mean over seeds)")
     for name, curve in summary["federated_eval_auprc_by_round"].items():
-        print(f"  {name:>8}: " + "  ".join(f"r{r}={s['mean']:.3f}" for r, s in curve.items()))
+        print(f"  {name:>{width}}: " + "  ".join(f"r{r}={s['mean']:.3f}" for r, s in curve.items()))
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -169,8 +191,11 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2, 3, 4])
     parser.add_argument("--rovers", type=int, default=8)
     parser.add_argument("--seconds", type=float, default=600.0)
-    parser.add_argument("--rounds", type=int, default=50, help="federated rounds; baselines train this many epochs")
-    parser.add_argument("--proximal-mu", type=float, default=0.1)
+    parser.add_argument("--rounds", type=int, default=50)
+    parser.add_argument(
+        "--local-epochs", type=int, default=1, help="per round; baselines train rounds x local-epochs epochs"
+    )
+    parser.add_argument("--proximal-mus", type=float, nargs="+", default=[0.1], help="one FedProx run per value")
     parser.add_argument("--evaluate-every", type=int, default=5)
     parser.add_argument("--jobs", type=int, default=2, help="seeds to run at the same time")
     parser.add_argument("--port-base", type=int, default=9200)

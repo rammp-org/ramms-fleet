@@ -25,8 +25,9 @@ def _setup(msg: Message, context: Context):
         history=int(cfg["history"]),
         label=str(cfg["label"]),
         horizon_m=float(cfg["horizon-m"]),
+        inputs=str(cfg["inputs"]),
     )
-    model = make_model(data.input_dim, int(cfg["hidden"]))
+    model = make_model(data.input_dim, int(cfg["hidden"]), str(cfg["inputs"]))
     model.load_state_dict(msg.content["arrays"].to_torch_state_dict())
     return cfg, data, model
 
@@ -43,6 +44,7 @@ def train_handler(msg: Message, context: Context) -> Message:
         lr=float(cfg["lr"]),
         seed=int(cfg["seed"]) + server_round,
         proximal_mu=float(cfg["proximal-mu"]),
+        images=data.img_train,
     )
     metrics = MetricRecord({"num-examples": len(data.x_train), "train-loss": loss})
     content = RecordDict({"arrays": ArrayRecord.from_torch_state_dict(model.state_dict()), "metrics": metrics})
@@ -52,7 +54,7 @@ def train_handler(msg: Message, context: Context) -> Message:
 @app.evaluate()
 def evaluate_handler(msg: Message, context: Context) -> Message:
     _, data, model = _setup(msg, context)
-    scores = evaluate(model, data.x_test, data.y_test)
+    scores = evaluate(model, data.x_test, data.y_test, data.img_test)
     metrics = MetricRecord(
         {
             "num-examples": scores["num_examples"],

@@ -130,6 +130,7 @@ def run_federated(args: argparse.Namespace) -> Path:
             "evaluate-every": args.evaluate_every,
             "label": args.label,
             "horizon-m": args.horizon_m,
+            "inputs": args.inputs,
             "seed": args.seed,
             "results-dir": out,
         }
@@ -173,6 +174,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--evaluate-every", type=int, default=1, help="client evaluation interval in rounds")
     parser.add_argument("--label", choices=("time", "distance"), default="time")
     parser.add_argument("--horizon-m", type=float, default=0.15, help="travel horizon for --label distance")
+    parser.add_argument("--inputs", choices=("features", "camera", "both"), default="features")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--port-base", type=int, default=9091, help="uses port-base .. port-base + 2 + rovers")
     run_federated(parser.parse_args(argv))

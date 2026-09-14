@@ -66,3 +66,55 @@ def test_distance_labels_use_travel_not_time():
     split = episode.copy()
     split[18:] = 1
     assert np.flatnonzero(distance_labels(bump, split, slow, 0.15)).tolist() == [18, 19]
+
+
+def _camera_file(path, steps=3000, seed=0):
+    """A synthetic run where only the camera reveals the label: bright frames precede collisions."""
+    rng = np.random.default_rng(seed)
+    label = rng.random(steps) < 0.2
+    images = rng.integers(0, 60, size=(steps, 48, 64), dtype=np.uint8)
+    images[label, 10:38, 20:44] = 220
+    age = np.full(steps, 0.0, dtype=np.float32)
+    age[::10] = 1.0  # every tenth frame is stale
+    np.savez_compressed(
+        path,
+        features=rng.normal(size=(steps, len(FEATURES))).astype(np.float32),
+        label=label,
+        valid=np.ones(steps, dtype=bool),
+        bump=np.zeros(steps, dtype=bool),
+        episode=np.zeros(steps, dtype=np.int32),
+        pose=np.zeros((steps, 3), dtype=np.float32),
+        images=images,
+        image_age=age,
+    )
+
+
+def test_camera_inputs_share_samples_and_learn_from_frames(tmp_path):
+    from ramms_fleet.experiment import load_model, save_model
+
+    path = tmp_path / "rover_00.npz"
+    _camera_file(path)
+    features_only = load_rover(path, inputs="features")
+    camera = load_rover(path, inputs="camera")
+    both = load_rover(path, inputs="both")
+    # Stale frames are dropped for every choice of inputs.
+    assert len(features_only.y_train) == len(camera.y_train) == len(both.y_train) < 0.95 * 3000 * 0.8
+    assert camera.img_train.shape[1:] == (1, 48, 64) and features_only.img_train is None
+
+    torch.manual_seed(0)
+    model = make_model(camera.input_dim, 32, "camera")
+    train(model, camera.x_train, camera.y_train, epochs=3, seed=0, images=camera.img_train)
+    assert evaluate(model, camera.x_test, camera.y_test, camera.img_test)["auroc"] > 0.95
+
+    save_model(tmp_path / "m.pt", model, camera.input_dim, 32, 4, "camera")
+    loaded, history, inputs = load_model(tmp_path / "m.pt")
+    assert (history, inputs) == (4, "camera")
+    np.testing.assert_allclose(
+        evaluate(loaded, camera.x_test, camera.y_test, camera.img_test)["auroc"],
+        evaluate(model, camera.x_test, camera.y_test, camera.img_test)["auroc"],
+    )
+
+
+def test_camera_inputs_need_frames(rover_file):
+    with pytest.raises(ValueError, match="no camera frames"):
+        load_rover(rover_file, inputs="both")

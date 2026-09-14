@@ -22,6 +22,9 @@ from ramms_fleet.spec import RANGE_SENSORS, RoverParams, RoverProfile
 from ramms_fleet.world import ArenaLayout, Cell, EnvConfig, build_cell_xml
 
 ACTOR_PREFIX = "fleet_rover"
+LIGHT_PREFIX = "fleet_light"
+# (actor id, rotation (roll, pitch, yaw) in degrees, intensity in lux): a key light and a softer fill.
+LIGHTS = (("fleet_light_key", [0.0, -55.0, 30.0], 8.0), ("fleet_light_fill", [0.0, -35.0, 210.0], 3.0))
 TIMESTEP = 0.005
 
 
@@ -40,6 +43,7 @@ class RammsFleet:
         level: str = "FleetArena",
         scene_dir: Path = Path("results/ramms-scene"),
         gap: float = 0.5,
+        camera: bool = False,
     ):
         self.profiles = profiles or [RoverProfile()] * len(configs)
         if len(self.profiles) != len(configs):
@@ -52,6 +56,10 @@ class RammsFleet:
         self.names = [f"{ACTOR_PREFIX}{i}" for i in range(self.num_rovers)]
         self._rng = np.random.default_rng(seed)
         self._noise = SensorNoise(self.profiles, seed, params.max_range)
+        self.camera = camera
+        self.camera_names = [f"{name}/front" for name in self.names]
+        self._images: np.ndarray | None = None
+        self._image_time = np.full(len(configs), -np.inf)
 
         cols = math.ceil(math.sqrt(self.num_rovers))
         pitch = layout.cell_size + gap
@@ -83,10 +91,17 @@ class RammsFleet:
         b = self.bridge
         if b.request("pie_status").get("state") not in ("off", None):
             b.request("stop_pie")
-        try:
-            b.request("load_level", level_path=f"/Game/Levels/{level}")
-        except BridgeError:
-            b.request("create_level", name=level)
+            deadline = time.monotonic() + 60
+            while b.request("pie_status").get("state") not in ("off", None):
+                if time.monotonic() > deadline:
+                    raise TimeoutError("RAMMS Play In Editor did not stop")
+                time.sleep(0.5)
+        level_path = f"/Game/Levels/{level}"
+        if b.request("current_level").get("level_path") != level_path:
+            try:
+                b.request("load_level", level_path=level_path)
+            except BridgeError:
+                b.request("create_level", name=level)
         b.request("ensure_manager")
 
         # Remove fleet rovers left over from an earlier run, then import and
@@ -96,6 +111,14 @@ class RammsFleet:
             actor_id = actor.get("actor_id") or ""
             if actor_id.startswith(ACTOR_PREFIX):
                 b.request("remove_actor", target=actor_id)
+        # A new level has no lights, and cameras would render black.
+        for actor in b.request("snapshot").get("actors", []):
+            if (actor.get("actor_id") or "").startswith(LIGHT_PREFIX):
+                b.request("remove_actor", target=actor["actor_id"])
+        for actor_id, rotation, intensity in LIGHTS:
+            b.request(
+                "spawn_light", kind="directional", actor_id=actor_id, rotation_euler=rotation, intensity=intensity
+            )
         for name, path, cell in zip(self.names, xml_paths, self.cells, strict=True):
             blueprint = b.request("import_xml", path=str(path), force_reimport=True)["blueprint_class_path"]
             b.request("spawn_actor", blueprint=blueprint, actor_id=name, location=[cell.center[0], cell.center[1], 0.0])
@@ -125,6 +148,42 @@ class RammsFleet:
         b.request("set_sim_options", options={"timestep": TIMESTEP})
         for name in self.names:
             b.request("claim_control", articulation=name, ttl_s=0)
+        if self.camera:
+            self._warm_up_cameras()
+
+    def _warm_up_cameras(self, max_steps: int = 100) -> None:
+        """Steps with the wheels stopped until every camera delivers a frame.
+
+        Captures only start once a step asks for them. Reset follows, so the
+        warm-up steps do not affect collection.
+        """
+        idle = {name: {"ctrl": [0.0, 0.0]} for name in self.names}
+        for _ in range(max_steps):
+            reply = self.bridge.request("step", n_steps=1, per_articulation=idle, **self._camera_fields())
+            if len(reply.get("cameras", {})) == self.num_rovers:
+                self._store_frames(reply)
+                return
+        raise RuntimeError(
+            "RAMMS cameras did not deliver frames; make sure the editor is not starved for CPU and that "
+            "'Use Less CPU when in Background' is off"
+        )
+
+    def _camera_fields(self) -> dict:
+        # render="sync" captures this step's state before replying: slower, but the frame matches the sensors.
+        return {"include_cameras": dict.fromkeys(self.camera_names, "latest"), "render": "sync"}
+
+    def _store_frames(self, reply: dict) -> None:
+        for i, key in enumerate(self.camera_names):
+            frame = reply.get("cameras", {}).get(key)
+            if frame is None:
+                continue
+            height, width = int(frame["height"]), int(frame["width"])
+            bgra = np.frombuffer(frame["data"], dtype=np.uint8).reshape(height, width, 4)
+            gray = 0.114 * bgra[..., 0] + 0.587 * bgra[..., 1] + 0.299 * bgra[..., 2]
+            if self._images is None:
+                self._images = np.zeros((self.num_rovers, height, width), dtype=np.uint8)
+            self._images[i] = np.clip(gray + 0.5, 0, 255).astype(np.uint8)
+            self._image_time[i] = float(frame["sim_time"])
 
     # ---- fleet interface
 
@@ -141,6 +200,8 @@ class RammsFleet:
             x, y, yaw = sample_clear_pose(self.cells[i], self.layout, self._rng)
             qpos = [x, y, self.params.wheel_radius, math.cos(yaw / 2), 0.0, 0.0, math.sin(yaw / 2)]
             self.bridge.request("set_qpos", target=self.names[i], qpos=qpos)
+            # A frame from before the reset shows the old pose.
+            self._image_time[i] = -np.inf
         self._last = self.bridge.request("forward")
         return self.observe()
 
@@ -152,7 +213,10 @@ class RammsFleet:
         per_articulation = {
             name: {"ctrl": [float(lv), float(rv)]} for name, lv, rv in zip(self.names, left, right, strict=True)
         }
-        self._last = self.bridge.request("step", n_steps=self.substeps, per_articulation=per_articulation)
+        fields = self._camera_fields() if self.camera else {}
+        self._last = self.bridge.request("step", n_steps=self.substeps, per_articulation=per_articulation, **fields)
+        if self.camera:
+            self._store_frames(self._last)
         return self.observe()
 
     def observe(self) -> FleetObs:
@@ -180,8 +244,20 @@ class RammsFleet:
             upright[i] = 1 - 2 * (qx * qx + qy * qy) > 0.5
         ranges[(ranges < 0) | (ranges > self.params.max_range)] = self.params.max_range
         self._noise.apply(ranges, accel, gyro)
+        images = image_age = None
+        if self.camera and self._images is not None:
+            images = self._images.copy()
+            image_age = float(self._last.get("time", 0.0)) - self._image_time
         return FleetObs(
-            ranges=ranges, accel=accel, gyro=gyro, wheel_vel=wheel_vel, bump=bump, pose=pose, upright=upright
+            ranges=ranges,
+            accel=accel,
+            gyro=gyro,
+            wheel_vel=wheel_vel,
+            bump=bump,
+            pose=pose,
+            upright=upright,
+            images=images,
+            image_age=image_age,
         )
 
     def close(self, stop_simulation: bool = True) -> None:

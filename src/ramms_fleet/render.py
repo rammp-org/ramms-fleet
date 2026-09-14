@@ -67,7 +67,9 @@ class RiskModel:
     """Scores each rover's last `history` steps of scaled features."""
 
     def __init__(self, path: Path, num_rovers: int):
-        self.model, self.history = load_model(path)
+        self.model, self.history, inputs = load_model(path)
+        if inputs != "features":
+            raise ValueError(f"{path} uses inputs={inputs!r}; videos support feature-only models")
         self.model.eval()
         self.window = np.zeros((num_rovers, self.history, len(FEATURE_SCALE)), dtype=np.float32)
 

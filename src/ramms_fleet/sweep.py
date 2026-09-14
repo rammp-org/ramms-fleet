@@ -83,6 +83,8 @@ def run_seed(seed: int, args: argparse.Namespace) -> Path:
             args.label,
             "--horizon-m",
             args.horizon_m,
+            "--inputs",
+            args.inputs,
         ],
         logs / "baseline.log",
         results / "centralized" / "model.pt",
@@ -114,6 +116,8 @@ def run_seed(seed: int, args: argparse.Namespace) -> Path:
                 args.label,
                 "--horizon-m",
                 args.horizon_m,
+                "--inputs",
+                args.inputs,
             ],
             logs / f"{name}.log",
             results / name / "model.pt",
@@ -279,6 +283,7 @@ def main(argv: list[str] | None = None) -> None:
         "--proximal-mus", type=float, nargs="*", default=[0.1], help="one FedProx run per value; none for FedAvg only"
     )
     parser.add_argument("--label", choices=("time", "distance"), default="time")
+    parser.add_argument("--inputs", choices=("features", "camera", "both"), default="features")
     parser.add_argument("--horizon-m", type=float, default=0.15, help="travel horizon for --label distance")
     parser.add_argument("--evaluate-every", type=int, default=5)
     parser.add_argument("--jobs", type=int, default=2, help="seeds to run at the same time")

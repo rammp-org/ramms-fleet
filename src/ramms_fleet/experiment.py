@@ -24,7 +24,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from ramms_fleet.learning import LABELS, RoverData, evaluate, load_rover, make_model, train
+from ramms_fleet.learning import INPUTS, LABELS, RoverData, evaluate, load_rover, make_model, train
 
 
 def rover_files(data_dir: Path) -> list[Path]:
@@ -34,22 +34,35 @@ def rover_files(data_dir: Path) -> list[Path]:
     return files
 
 
-def save_model(path: Path, model: torch.nn.Module, input_dim: int, hidden: int, history: int) -> None:
+def save_model(
+    path: Path, model: torch.nn.Module, input_dim: int, hidden: int, history: int, inputs: str = "features"
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save({"state_dict": model.state_dict(), "input_dim": input_dim, "hidden": hidden, "history": history}, path)
+    torch.save(
+        {
+            "state_dict": model.state_dict(),
+            "input_dim": input_dim,
+            "hidden": hidden,
+            "history": history,
+            "inputs": inputs,
+        },
+        path,
+    )
 
 
-def load_model(path: Path) -> tuple[torch.nn.Module, int]:
+def load_model(path: Path) -> tuple[torch.nn.Module, int, str]:
+    """Returns the model, its feature history length, and its inputs."""
     saved = torch.load(path, weights_only=True)
-    model = make_model(saved["input_dim"], saved["hidden"])
+    inputs = saved.get("inputs", "features")
+    model = make_model(saved["input_dim"], saved["hidden"], inputs)
     model.load_state_dict(saved["state_dict"])
-    return model, saved["history"]
+    return model, saved["history"], inputs
 
 
-def initial_model(input_dim: int, hidden: int, seed: int) -> torch.nn.Module:
+def initial_model(input_dim: int, hidden: int, seed: int, inputs: str = "features") -> torch.nn.Module:
     """Every method starts from the same weights for a given seed."""
     torch.manual_seed(seed)
-    return make_model(input_dim, hidden)
+    return make_model(input_dim, hidden, inputs)
 
 
 def run_baselines(
@@ -62,22 +75,24 @@ def run_baselines(
     seed: int,
     label: str = "time",
     horizon_m: float = 0.15,
+    inputs: str = "features",
 ) -> None:
     files = rover_files(data_dir)
-    datasets = [load_rover(f, history, label=label, horizon_m=horizon_m) for f in files]
+    datasets = [load_rover(f, history, label=label, horizon_m=horizon_m, inputs=inputs) for f in files]
     input_dim = datasets[0].input_dim
 
     for f, data in zip(files, datasets, strict=True):
-        model = initial_model(input_dim, hidden, seed)
-        loss = train(model, data.x_train, data.y_train, epochs=epochs, lr=lr, seed=seed)
-        save_model(out_dir / "local" / f"{f.stem}.pt", model, input_dim, hidden, history)
+        model = initial_model(input_dim, hidden, seed, inputs)
+        loss = train(model, data.x_train, data.y_train, epochs=epochs, lr=lr, seed=seed, images=data.img_train)
+        save_model(out_dir / "local" / f"{f.stem}.pt", model, input_dim, hidden, history, inputs)
         print(f"local {f.stem}: {len(data.x_train)} samples, final loss {loss:.4f}")
 
     x = np.concatenate([d.x_train for d in datasets])
     y = np.concatenate([d.y_train for d in datasets])
-    model = initial_model(input_dim, hidden, seed)
-    loss = train(model, x, y, epochs=epochs, lr=lr, seed=seed)
-    save_model(out_dir / "centralized" / "model.pt", model, input_dim, hidden, history)
+    images = None if inputs == "features" else np.concatenate([d.img_train for d in datasets])
+    model = initial_model(input_dim, hidden, seed, inputs)
+    loss = train(model, x, y, epochs=epochs, lr=lr, seed=seed, images=images)
+    save_model(out_dir / "centralized" / "model.pt", model, input_dim, hidden, history, inputs)
     print(f"centralized: {len(x)} samples, final loss {loss:.4f}")
 
 
@@ -92,14 +107,26 @@ def baseline_main(argv: list[str] | None = None) -> None:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--label", choices=LABELS, default="time", help="time horizon from collection, or distance")
     parser.add_argument("--horizon-m", type=float, default=0.15, help="travel horizon for --label distance")
+    parser.add_argument(
+        "--inputs", choices=INPUTS, default="features", help="camera needs data collected with --camera"
+    )
     args = parser.parse_args(argv)
     run_baselines(
-        args.data, args.out, args.epochs, args.hidden, args.history, args.lr, args.seed, args.label, args.horizon_m
+        args.data,
+        args.out,
+        args.epochs,
+        args.hidden,
+        args.history,
+        args.lr,
+        args.seed,
+        args.label,
+        args.horizon_m,
+        args.inputs,
     )
 
 
 def _score(model: torch.nn.Module, data: RoverData) -> dict[str, float]:
-    return evaluate(model, data.x_test, data.y_test)
+    return evaluate(model, data.x_test, data.y_test, data.img_test)
 
 
 def _nanmean(values: list[float]) -> float:
@@ -119,12 +146,14 @@ def run_evaluation(
     meta = json.loads((data_dir / "meta.json").read_text())
     rover_meta = {r["rover"]: r for r in meta["rovers"]}
     profile_keys = ("clutter", "cruise_speed", "range_noise", "accel_noise", "gyro_noise")
-    cache: dict[int, dict[int, RoverData]] = {}
+    cache: dict[tuple[int, str], dict[int, RoverData]] = {}
 
-    def data_for(history: int) -> dict[int, RoverData]:
-        if history not in cache:
-            cache[history] = {i: load_rover(f, history, label=label, horizon_m=horizon_m) for i, f in enumerate(files)}
-        return cache[history]
+    def data_for(history: int, inputs: str) -> dict[int, RoverData]:
+        if (history, inputs) not in cache:
+            cache[history, inputs] = {
+                i: load_rover(f, history, label=label, horizon_m=horizon_m, inputs=inputs) for i, f in enumerate(files)
+            }
+        return cache[history, inputs]
 
     report: dict = {"rovers": [], "summary": {}}
     # Every subdirectory holding a model.pt is a method trained on all rovers
@@ -137,20 +166,22 @@ def run_evaluation(
     per_method: dict[str, list[float]] = {name: [] for name in [*shared_models, *(f"{n}+ft" for n in finetuned)]}
     for i, f in enumerate(files):
         row: dict = {"rover": i, **{k: rover_meta.get(i, {}).get(k) for k in profile_keys}}
-        for name, (model, history) in shared_models.items():
-            data = data_for(history)[i]
+        for name, (model, history, inputs) in shared_models.items():
+            data = data_for(history, inputs)[i]
             row[name] = _score(model, data)
             per_method[name].append(row[name]["auprc"])
             if name in finetuned:
                 personal = copy.deepcopy(model)
-                train(personal, data.x_train, data.y_train, epochs=finetune_epochs, lr=lr, seed=0)
+                train(
+                    personal, data.x_train, data.y_train, epochs=finetune_epochs, lr=lr, seed=0, images=data.img_train
+                )
                 row[f"{name}+ft"] = _score(personal, data)
                 per_method[f"{name}+ft"].append(row[f"{name}+ft"]["auprc"])
 
         local_path = results_dir / "local" / f"{f.stem}.pt"
         if local_path.exists():
-            model, history = load_model(local_path)
-            data = data_for(history)
+            model, history, inputs = load_model(local_path)
+            data = data_for(history, inputs)
             row["local"] = _score(model, data[i])
             others = [_score(model, data[j])["auprc"] for j in data if j != i]
             row["local_on_other_rovers_auprc"] = _nanmean(others)

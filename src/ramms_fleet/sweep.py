@@ -79,6 +79,10 @@ def run_seed(seed: int, args: argparse.Namespace) -> Path:
             args.rounds * args.local_epochs,
             "--seed",
             seed,
+            "--label",
+            args.label,
+            "--horizon-m",
+            args.horizon_m,
         ],
         logs / "baseline.log",
         results / "centralized" / "model.pt",
@@ -106,6 +110,10 @@ def run_seed(seed: int, args: argparse.Namespace) -> Path:
                 seed,
                 "--port-base",
                 port_base,
+                "--label",
+                args.label,
+                "--horizon-m",
+                args.horizon_m,
             ],
             logs / f"{name}.log",
             results / name / "model.pt",
@@ -113,7 +121,19 @@ def run_seed(seed: int, args: argparse.Namespace) -> Path:
     (results / "evaluation.json").unlink(missing_ok=True)
     _run(
         f"seed {seed} eval",
-        [BIN / "ramms-fleet-eval", "--data", data, "--results", results, "--finetune-epochs", args.finetune_epochs],
+        [
+            BIN / "ramms-fleet-eval",
+            "--data",
+            data,
+            "--results",
+            results,
+            "--finetune-epochs",
+            args.finetune_epochs,
+            "--label",
+            args.label,
+            "--horizon-m",
+            args.horizon_m,
+        ],
         logs / "eval.log",
         results / "evaluation.json",
     )
@@ -122,6 +142,8 @@ def run_seed(seed: int, args: argparse.Namespace) -> Path:
 
 def federated_methods(proximal_mus: list[float]) -> list[tuple[str, float]]:
     """FedAvg plus one FedProx run per mu; a single mu keeps the plain name `fedprox`."""
+    if not proximal_mus:
+        return [("fedavg", 0.0)]
     if len(proximal_mus) == 1:
         return [("fedavg", 0.0), ("fedprox", proximal_mus[0])]
     return [("fedavg", 0.0)] + [(f"fedprox-mu{mu:g}", mu) for mu in proximal_mus]
@@ -253,7 +275,11 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--local-epochs", type=int, default=1, help="per round; baselines train rounds x local-epochs epochs"
     )
-    parser.add_argument("--proximal-mus", type=float, nargs="+", default=[0.1], help="one FedProx run per value")
+    parser.add_argument(
+        "--proximal-mus", type=float, nargs="*", default=[0.1], help="one FedProx run per value; none for FedAvg only"
+    )
+    parser.add_argument("--label", choices=("time", "distance"), default="time")
+    parser.add_argument("--horizon-m", type=float, default=0.15, help="travel horizon for --label distance")
     parser.add_argument("--evaluate-every", type=int, default=5)
     parser.add_argument("--jobs", type=int, default=2, help="seeds to run at the same time")
     parser.add_argument("--port-base", type=int, default=9200)

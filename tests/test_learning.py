@@ -47,3 +47,22 @@ def test_training_learns_collision_signal(rover_file):
     train(model, data.x_train, data.y_train, epochs=15, seed=0)
     after = evaluate(model, data.x_train, data.y_train)["auroc"]
     assert after > max(before, 0.8)
+
+
+def test_distance_labels_use_travel_not_time():
+    from ramms_fleet.labels import distance_labels
+
+    steps = 40
+    episode = np.zeros(steps, dtype=int)
+    bump = np.zeros(steps, dtype=bool)
+    bump[20] = True
+    slow = np.column_stack([np.arange(steps) * 0.01, np.zeros(steps), np.zeros(steps)])  # 0.01 m per step
+    fast = np.column_stack([np.arange(steps) * 0.05, np.zeros(steps), np.zeros(steps)])  # 0.05 m per step
+    # 0.15 m of travel is 15 steps for the slow rover and 3 for the fast one.
+    assert np.flatnonzero(distance_labels(bump, episode, slow, 0.15)).tolist() == list(range(5, 20))
+    assert np.flatnonzero(distance_labels(bump, episode, fast, 0.15)).tolist() == [17, 18, 19]
+    # Capped window, and no labels across an episode boundary.
+    assert distance_labels(bump, episode, np.zeros((steps, 3)), 0.15, max_steps=4).sum() == 4
+    split = episode.copy()
+    split[18:] = 1
+    assert np.flatnonzero(distance_labels(bump, split, slow, 0.15)).tolist() == [18, 19]

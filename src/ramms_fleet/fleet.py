@@ -88,16 +88,13 @@ class MujocoFleet:
         self.dt = self.substeps * timestep
         self._rng = np.random.default_rng(seed)
         # A separate stream so noise-free fleets draw exactly as before.
-        self._noise_rng = np.random.default_rng([seed, 1])
-        self._range_noise = np.array([p.range_noise for p in self.profiles])
-        self._accel_noise = np.array([p.accel_noise for p in self.profiles])
-        self._gyro_noise = np.array([p.gyro_noise for p in self.profiles])
+        self._noise = SensorNoise(self.profiles, seed, params.max_range)
 
     def reset(self, rovers: list[int] | None = None) -> FleetObs:
         """Places rovers at random clear poses in their cells, at rest."""
         for i in range(self.num_rovers) if rovers is None else rovers:
             r = self.rovers[i]
-            x, y, yaw = self._sample_clear_pose(r.cell)
+            x, y, yaw = sample_clear_pose(r.cell, self.layout, self._rng)
             r.data.qpos[r.qpos : r.qpos + 7] = [
                 x,
                 y,
@@ -157,25 +154,47 @@ class MujocoFleet:
             # xmat[8]: z component of the chassis up axis in the world frame.
             upright[i] = r.data.xmat[r.body, 8] > 0.5
         ranges[(ranges < 0) | (ranges > self.params.max_range)] = self.params.max_range
-        # Sensor noise corrupts what the rover observes (and so what it records
-        # and how it drives); the bumper and pose stay exact.
-        if self._range_noise.any():
-            ranges += self._range_noise[:, None] * self._noise_rng.standard_normal(ranges.shape)
-            np.clip(ranges, 0.0, self.params.max_range, out=ranges)
-        if self._accel_noise.any():
-            accel += self._accel_noise[:, None] * self._noise_rng.standard_normal(accel.shape)
-        if self._gyro_noise.any():
-            gyro += self._gyro_noise[:, None] * self._noise_rng.standard_normal(gyro.shape)
+        self._noise.apply(ranges, accel, gyro)
         return FleetObs(
             ranges=ranges, accel=accel, gyro=gyro, wheel_vel=wheel_vel, bump=bump, pose=pose, upright=upright
         )
 
-    def _sample_clear_pose(self, cell: Cell, clearance: float = 0.3) -> tuple[float, float, float]:
-        inner = self.layout.cell_size / 2 - self.layout.wall_thickness - clearance
-        cx, cy = cell.center
-        for _ in range(1000):
-            x = cx + self._rng.uniform(-inner, inner)
-            y = cy + self._rng.uniform(-inner, inner)
-            if all(math.hypot(x - o.x, y - o.y) > o.radius + clearance for o in cell.obstacles):
-                return x, y, self._rng.uniform(-math.pi, math.pi)
-        raise RuntimeError(f"no clear pose in cell {cell.index} (clutter {cell.config.clutter})")
+
+class SensorNoise:
+    """Per-rover Gaussian sensor noise, shared by every backend.
+
+    Noise corrupts what the rover observes (and so what it records and how it
+    drives); the bumper and pose stay exact. Its random stream is separate
+    from pose sampling, so noise-free fleets draw exactly as before.
+    """
+
+    def __init__(self, profiles: list[RoverProfile], seed: int, max_range: float):
+        self._rng = np.random.default_rng([seed, 1])
+        self._range = np.array([p.range_noise for p in profiles])
+        self._accel = np.array([p.accel_noise for p in profiles])
+        self._gyro = np.array([p.gyro_noise for p in profiles])
+        self._max_range = max_range
+
+    def apply(self, ranges: np.ndarray, accel: np.ndarray, gyro: np.ndarray) -> None:
+        """Adds noise in place; ranges stay within [0, max_range]."""
+        if self._range.any():
+            ranges += self._range[:, None] * self._rng.standard_normal(ranges.shape)
+            np.clip(ranges, 0.0, self._max_range, out=ranges)
+        if self._accel.any():
+            accel += self._accel[:, None] * self._rng.standard_normal(accel.shape)
+        if self._gyro.any():
+            gyro += self._gyro[:, None] * self._rng.standard_normal(gyro.shape)
+
+
+def sample_clear_pose(
+    cell: Cell, layout: ArenaLayout, rng: np.random.Generator, clearance: float = 0.3
+) -> tuple[float, float, float]:
+    """A random (x, y, yaw) in the cell, at least `clearance` from walls and obstacle bounds."""
+    inner = layout.cell_size / 2 - layout.wall_thickness - clearance
+    cx, cy = cell.center
+    for _ in range(1000):
+        x = cx + rng.uniform(-inner, inner)
+        y = cy + rng.uniform(-inner, inner)
+        if all(math.hypot(x - o.x, y - o.y) > o.radius + clearance for o in cell.obstacles):
+            return x, y, rng.uniform(-math.pi, math.pi)
+    raise RuntimeError(f"no clear pose in cell {cell.index} (clutter {cell.config.clutter})")

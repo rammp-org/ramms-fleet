@@ -93,7 +93,8 @@ def build_world(configs: list[EnvConfig], layout: ArenaLayout = ArenaLayout()) -
     return spec, cells
 
 
-def _add_walls(world: mujoco.MjsBody, cell: Cell, layout: ArenaLayout) -> None:
+def _add_walls(world: mujoco.MjsBody, cell: Cell, layout: ArenaLayout, prefix: str | None = None) -> None:
+    prefix = f"cell{cell.index}/" if prefix is None else prefix
     half = layout.cell_size / 2
     t = layout.wall_thickness / 2
     h = layout.wall_height / 2
@@ -105,7 +106,7 @@ def _add_walls(world: mujoco.MjsBody, cell: Cell, layout: ArenaLayout) -> None:
         ("w", [cx - half, cy, h], [t, half + t, h]),
     ):
         world.add_geom(
-            name=f"cell{cell.index}/wall_{name}",
+            name=f"{prefix}wall_{name}",
             type=mujoco.mjtGeom.mjGEOM_BOX,
             pos=pos,
             size=size,
@@ -113,7 +114,8 @@ def _add_walls(world: mujoco.MjsBody, cell: Cell, layout: ArenaLayout) -> None:
         )
 
 
-def _add_obstacles(world: mujoco.MjsBody, cell: Cell, layout: ArenaLayout) -> None:
+def _add_obstacles(world: mujoco.MjsBody, cell: Cell, layout: ArenaLayout, prefix: str | None = None) -> None:
+    prefix = f"cell{cell.index}/" if prefix is None else prefix
     rng = np.random.default_rng(cell.config.seed)
     inner = layout.cell_size / 2 - layout.wall_thickness
     count = round(cell.config.clutter * (2 * inner) ** 2)
@@ -126,7 +128,7 @@ def _add_obstacles(world: mujoco.MjsBody, cell: Cell, layout: ArenaLayout) -> No
             hx, hy = rng.uniform(0.05, 0.25, size=2)
             yaw = rng.uniform(0, math.pi)
             world.add_geom(
-                name=f"cell{cell.index}/obstacle{k}",
+                name=f"{prefix}obstacle{k}",
                 type=mujoco.mjtGeom.mjGEOM_BOX,
                 pos=[x, y, half_height],
                 size=[hx, hy, half_height],
@@ -137,10 +139,36 @@ def _add_obstacles(world: mujoco.MjsBody, cell: Cell, layout: ArenaLayout) -> No
         else:
             radius = rng.uniform(0.05, 0.2)
             world.add_geom(
-                name=f"cell{cell.index}/obstacle{k}",
+                name=f"{prefix}obstacle{k}",
                 type=mujoco.mjtGeom.mjGEOM_CYLINDER,
                 pos=[x, y, half_height],
                 size=[radius, half_height, 0],
                 rgba=[0.70, 0.60, 0.25, 1],
             )
         cell.obstacles.append(Obstacle(x=x, y=y, radius=radius))
+
+
+def build_cell_xml(config: EnvConfig, model_name: str, layout: ArenaLayout = ArenaLayout()) -> tuple[str, Cell]:
+    """One rover's arena as standalone MJCF, for engines that import MJCF files (RAMMS through URLab).
+
+    Built on rover.xml itself, so body, joint, actuator, and sensor names stay
+    exactly as in the rover file (no prefixes, no "/" in names). The floor is a
+    finite box rather than a plane: several of these arenas can be loaded into
+    one simulation, and MuJoCo planes collide infinitely.
+    """
+    spec = mujoco.MjSpec.from_string(rover_xml())
+    spec.modelname = model_name
+    spec.option.timestep = 0.005
+    spec.option.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
+    cell = Cell(index=0, center=(0.0, 0.0), config=config)
+    half = layout.cell_size / 2 + layout.wall_thickness
+    spec.worldbody.add_geom(
+        name="floor",
+        type=mujoco.mjtGeom.mjGEOM_BOX,
+        size=[half, half, 0.05],
+        pos=[0, 0, -0.05],
+        rgba=[0.55, 0.55, 0.55, 1],
+    )
+    _add_walls(spec.worldbody, cell, layout, prefix="")
+    _add_obstacles(spec.worldbody, cell, layout, prefix="")
+    return spec.to_xml(), cell

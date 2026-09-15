@@ -1,0 +1,198 @@
+"""RAMMS backend: the same fleet interface as MujocoFleet, simulated inside RAMMS.
+
+Each rover's arena is exported as standalone MJCF, imported into a dedicated
+RAMMS level through URLab, and spawned as its own articulation. The fleet then
+starts Play In Editor, switches URLab to direct (client-clocked) stepping, and
+drives every rover with one `step` request per control step.
+
+Requires the RAMMS editor to be running with the URLab bridge listening.
+"""
+
+from __future__ import annotations
+
+import math
+import time
+from pathlib import Path
+
+import numpy as np
+
+from ramms_fleet.fleet import FleetObs, SensorNoise, sample_clear_pose
+from ramms_fleet.ramms.bridge import BridgeError, URLabBridge
+from ramms_fleet.spec import RANGE_SENSORS, RoverParams, RoverProfile
+from ramms_fleet.world import ArenaLayout, Cell, EnvConfig, build_cell_xml
+
+ACTOR_PREFIX = "fleet_rover"
+TIMESTEP = 0.005
+
+
+class RammsFleet:
+    backend = "ramms"
+
+    def __init__(
+        self,
+        configs: list[EnvConfig],
+        control_hz: float = 20.0,
+        seed: int = 0,
+        layout: ArenaLayout = ArenaLayout(),
+        params: RoverParams = RoverParams(),
+        profiles: list[RoverProfile] | None = None,
+        address: str = "tcp://127.0.0.1:5559",
+        level: str = "FleetArena",
+        scene_dir: Path = Path("results/ramms-scene"),
+        gap: float = 0.5,
+    ):
+        self.profiles = profiles or [RoverProfile()] * len(configs)
+        if len(self.profiles) != len(configs):
+            raise ValueError(f"{len(self.profiles)} profiles for {len(configs)} rovers")
+        self.num_rovers = len(configs)
+        self.layout = layout
+        self.params = params
+        self.substeps = max(1, round(1.0 / (control_hz * TIMESTEP)))
+        self.dt = self.substeps * TIMESTEP
+        self.names = [f"{ACTOR_PREFIX}{i}" for i in range(self.num_rovers)]
+        self._rng = np.random.default_rng(seed)
+        self._noise = SensorNoise(self.profiles, seed, params.max_range)
+
+        cols = math.ceil(math.sqrt(self.num_rovers))
+        pitch = layout.cell_size + gap
+        self.cells: list[Cell] = []
+        xml_paths: list[Path] = []
+        scene_dir = Path(scene_dir).resolve()
+        scene_dir.mkdir(parents=True, exist_ok=True)
+        for i, config in enumerate(configs):
+            xml, local = build_cell_xml(config, self.names[i], layout)
+            center = ((i % cols) * pitch, (i // cols) * pitch)
+            # Obstacles are generated around the origin; shift them with the arena.
+            for o in local.obstacles:
+                o.x += center[0]
+                o.y += center[1]
+            self.cells.append(Cell(index=i, center=center, config=config, obstacles=local.obstacles))
+            path = scene_dir / f"{self.names[i]}.xml"
+            path.write_text(xml)
+            xml_paths.append(path)
+
+        self.bridge = URLabBridge(address, timeout_s=120)
+        self.bridge.hello()
+        self._build_scene(level, xml_paths)
+        self._start_simulation()
+        self._last: dict = {}
+
+    # ---- setup
+
+    def _build_scene(self, level: str, xml_paths: list[Path]) -> None:
+        b = self.bridge
+        if b.request("pie_status").get("state") not in ("off", None):
+            b.request("stop_pie")
+        try:
+            b.request("load_level", level_path=f"/Game/Levels/{level}")
+        except BridgeError:
+            b.request("create_level", name=level)
+        b.request("ensure_manager")
+
+        # Remove fleet rovers left over from an earlier run, then import and
+        # spawn this fleet's arenas. Reimporting picks up new obstacle layouts.
+        wanted = set(self.names)
+        for actor in b.request("snapshot").get("actors", []):
+            actor_id = actor.get("actor_id") or ""
+            if actor_id.startswith(ACTOR_PREFIX):
+                b.request("remove_actor", target=actor_id)
+        for name, path, cell in zip(self.names, xml_paths, self.cells, strict=True):
+            blueprint = b.request("import_xml", path=str(path), force_reimport=True)["blueprint_class_path"]
+            b.request("spawn_actor", blueprint=blueprint, actor_id=name, location=[cell.center[0], cell.center[1], 0.0])
+        b.request("save_level")
+        missing = wanted - {a.get("actor_id") for a in b.request("snapshot").get("actors", [])}
+        if missing:
+            raise RuntimeError(f"rovers missing from the RAMMS level after spawning: {sorted(missing)}")
+
+    def _start_simulation(self, timeout_s: float = 300.0) -> None:
+        b = self.bridge
+        state = b.request("begin_pie")
+        started = time.monotonic()
+        while state.get("state") != "ready":
+            if state.get("state") in ("compile_failed", "timeout"):
+                raise RuntimeError(
+                    f"RAMMS Play In Editor failed: {state.get('state')} {state.get('compile_error', '')}"
+                )
+            if time.monotonic() - started > timeout_s:
+                raise TimeoutError("RAMMS Play In Editor did not become ready")
+            time.sleep(1.0)
+            state = b.request("pie_status")
+        b.hello()
+        present = {a["actor_id"] for a in b.handshake.get("articulations", [])}
+        if not set(self.names) <= present:
+            raise RuntimeError(f"articulations missing in RAMMS: {sorted(set(self.names) - present)}")
+        b.request("set_mode", mode="direct")
+        b.request("set_sim_options", options={"timestep": TIMESTEP})
+        for name in self.names:
+            b.request("claim_control", articulation=name, ttl_s=0)
+
+    # ---- fleet interface
+
+    def reset(self, rovers: list[int] | None = None) -> FleetObs:
+        """Places rovers at random clear poses in their cells.
+
+        A full reset also zeroes every velocity. URLab's set_qpos does not touch
+        velocities, so a partial reset (a tipped rover) keeps its last velocity.
+        """
+        chosen = range(self.num_rovers) if rovers is None else rovers
+        if rovers is None:
+            self.bridge.request("reset")
+        for i in chosen:
+            x, y, yaw = sample_clear_pose(self.cells[i], self.layout, self._rng)
+            qpos = [x, y, self.params.wheel_radius, math.cos(yaw / 2), 0.0, 0.0, math.sin(yaw / 2)]
+            self.bridge.request("set_qpos", target=self.names[i], qpos=qpos)
+        self._last = self.bridge.request("forward")
+        return self.observe()
+
+    def step(self, commands: np.ndarray) -> FleetObs:
+        """Applies (linear m/s, angular rad/s) body-velocity commands, shape (N, 2)."""
+        half_track = self.params.track_width / 2
+        left = (commands[:, 0] - commands[:, 1] * half_track) / self.params.wheel_radius
+        right = (commands[:, 0] + commands[:, 1] * half_track) / self.params.wheel_radius
+        per_articulation = {
+            name: {"ctrl": [float(lv), float(rv)]} for name, lv, rv in zip(self.names, left, right, strict=True)
+        }
+        self._last = self.bridge.request("step", n_steps=self.substeps, per_articulation=per_articulation)
+        return self.observe()
+
+    def observe(self) -> FleetObs:
+        n = self.num_rovers
+        ranges = np.empty((n, len(RANGE_SENSORS)))
+        accel = np.empty((n, 3))
+        gyro = np.empty((n, 3))
+        wheel_vel = np.empty((n, 2))
+        bump = np.empty(n, dtype=bool)
+        pose = np.empty((n, 3))
+        upright = np.empty(n, dtype=bool)
+        arts = self._last.get("arts", {})
+        for i, name in enumerate(self.names):
+            art = arts[name]
+            sensors = art["sensors"]
+            ranges[i] = [sensors[s][0] for s in RANGE_SENSORS]
+            accel[i] = sensors["accel"]
+            gyro[i] = sensors["gyro"]
+            wheel_vel[i] = [sensors["wheel_left_vel"][0], sensors["wheel_right_vel"][0]]
+            bump[i] = sensors["bump"][0] > self.params.bump_force
+            x, y, _, qw, qx, qy, qz = art["qpos"][:7]
+            yaw = math.atan2(2 * (qw * qz + qx * qy), 1 - 2 * (qy * qy + qz * qz))
+            pose[i] = (x - self.cells[i].center[0], y - self.cells[i].center[1], yaw)
+            # z component of the chassis up axis in the world frame.
+            upright[i] = 1 - 2 * (qx * qx + qy * qy) > 0.5
+        ranges[(ranges < 0) | (ranges > self.params.max_range)] = self.params.max_range
+        self._noise.apply(ranges, accel, gyro)
+        return FleetObs(
+            ranges=ranges, accel=accel, gyro=gyro, wheel_vel=wheel_vel, bump=bump, pose=pose, upright=upright
+        )
+
+    def close(self, stop_simulation: bool = True) -> None:
+        for name in self.names:
+            try:
+                self.bridge.request("release_control", articulation=name)
+            except (BridgeError, TimeoutError):
+                pass
+        if stop_simulation:
+            try:
+                self.bridge.request("stop_pie")
+            except (BridgeError, TimeoutError):
+                pass
+        self.bridge.close()

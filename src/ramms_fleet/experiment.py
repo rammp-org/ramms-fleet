@@ -145,7 +145,16 @@ def run_evaluation(
     files = rover_files(data_dir)
     meta = json.loads((data_dir / "meta.json").read_text())
     rover_meta = {r["rover"]: r for r in meta["rovers"]}
-    profile_keys = ("clutter", "cruise_speed", "range_noise", "accel_noise", "gyro_noise")
+    profile_keys = (
+        "clutter",
+        "pedestrians",
+        "cruise_speed",
+        "range_noise",
+        "accel_noise",
+        "gyro_noise",
+        "collisions_per_min",
+        "pedestrian_collisions_per_min",
+    )
     cache: dict[tuple[int, str], dict[int, RoverData]] = {}
 
     def data_for(history: int, inputs: str) -> dict[int, RoverData]:

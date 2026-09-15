@@ -16,7 +16,8 @@ from pathlib import Path
 
 import numpy as np
 
-from ramms_fleet.fleet import FleetObs, SensorNoise, sample_clear_pose
+from ramms_fleet.crowd import CrowdParams
+from ramms_fleet.fleet import FleetObs, SensorNoise, make_crowd, pedestrian_circles, sample_clear_pose
 from ramms_fleet.ramms.bridge import BridgeError, URLabBridge
 from ramms_fleet.spec import RANGE_SENSORS, RoverParams, RoverProfile
 from ramms_fleet.world import ArenaLayout, Cell, EnvConfig, build_cell_xml
@@ -26,6 +27,8 @@ LIGHT_PREFIX = "fleet_light"
 # (actor id, rotation (roll, pitch, yaw) in degrees, intensity in lux): a key light and a softer fill.
 LIGHTS = (("fleet_light_key", [0.0, -55.0, 30.0], 8.0), ("fleet_light_fill", [0.0, -35.0, 210.0], 3.0))
 TIMESTEP = 0.005
+# qpos layout per articulation: free root (7), both wheel hinges, then x, y slides per pedestrian.
+PED_QPOS = 9
 
 
 class RammsFleet:
@@ -44,6 +47,7 @@ class RammsFleet:
         scene_dir: Path = Path("results/ramms-scene"),
         gap: float = 0.5,
         camera: bool = False,
+        crowd: CrowdParams = CrowdParams(),
     ):
         self.profiles = profiles or [RoverProfile()] * len(configs)
         if len(self.profiles) != len(configs):
@@ -68,16 +72,26 @@ class RammsFleet:
         scene_dir = Path(scene_dir).resolve()
         scene_dir.mkdir(parents=True, exist_ok=True)
         for i, config in enumerate(configs):
-            xml, local = build_cell_xml(config, self.names[i], layout)
+            xml, local = build_cell_xml(config, self.names[i], layout, crowd)
             center = ((i % cols) * pitch, (i // cols) * pitch)
             # Obstacles are generated around the origin; shift them with the arena.
             for o in local.obstacles:
                 o.x += center[0]
                 o.y += center[1]
-            self.cells.append(Cell(index=i, center=center, config=config, obstacles=local.obstacles))
+            self.cells.append(
+                Cell(
+                    index=i,
+                    center=center,
+                    config=config,
+                    obstacles=local.obstacles,
+                    pedestrian_homes=local.pedestrian_homes,
+                )
+            )
             path = scene_dir / f"{self.names[i]}.xml"
             path.write_text(xml)
             xml_paths.append(path)
+        self.crowd = make_crowd(self.cells, layout, crowd, seed)
+        self._ped_home = [np.array(c.pedestrian_homes, dtype=float).reshape(-1, 2) for c in self.cells]
 
         self.bridge = URLabBridge(address, timeout_s=120)
         self.bridge.hello()
@@ -157,7 +171,10 @@ class RammsFleet:
         Captures only start once a step asks for them. Reset follows, so the
         warm-up steps do not affect collection.
         """
-        idle = {name: {"ctrl": [0.0, 0.0]} for name in self.names}
+        idle = {
+            name: {"ctrl": [0.0] * (2 + 2 * cell.config.pedestrians)}
+            for name, cell in zip(self.names, self.cells, strict=True)
+        }
         for _ in range(max_steps):
             reply = self.bridge.request("step", n_steps=1, per_articulation=idle, **self._camera_fields())
             if len(reply.get("cameras", {})) == self.num_rovers:
@@ -196,9 +213,22 @@ class RammsFleet:
         chosen = range(self.num_rovers) if rovers is None else rovers
         if rovers is None:
             self.bridge.request("reset")
+            peds = np.full((self.num_rovers, 0 if self.crowd is None else self.crowd.size, 2), np.nan)
+        else:
+            peds = self._pedestrian_positions()
         for i in chosen:
-            x, y, yaw = sample_clear_pose(self.cells[i], self.layout, self._rng)
+            cell = self.cells[i]
+            # A full reset scatters the pedestrians too; a partial one leaves them walking.
+            placed = self.crowd.place(i) if rovers is None and cell.config.pedestrians else None
+            if placed is not None:
+                peds[i, : len(placed)] = placed
+            x, y, yaw = sample_clear_pose(
+                cell, self.layout, self._rng, avoid=pedestrian_circles(cell, peds[i], self.crowd)
+            )
             qpos = [x, y, self.params.wheel_radius, math.cos(yaw / 2), 0.0, 0.0, math.sin(yaw / 2)]
+            if placed is not None:
+                # The full vector: root, wheel angles, then pedestrian offsets from their homes.
+                qpos += [0.0, 0.0, *(placed - self._ped_home[i]).ravel().tolist()]
             self.bridge.request("set_qpos", target=self.names[i], qpos=qpos)
             # A frame from before the reset shows the old pose.
             self._image_time[i] = -np.inf
@@ -213,6 +243,14 @@ class RammsFleet:
         per_articulation = {
             name: {"ctrl": [float(lv), float(rv)]} for name, lv, rv in zip(self.names, left, right, strict=True)
         }
+        if self.crowd is not None:
+            arts = self._last["arts"]
+            rover_xy = np.array(
+                [np.asarray(arts[n]["qpos"][:2]) - c.center for n, c in zip(self.names, self.cells, strict=True)]
+            )
+            walk = self.crowd.velocities(self._pedestrian_positions(), rover_xy, self.dt)
+            for i, (name, cell) in enumerate(zip(self.names, self.cells, strict=True)):
+                per_articulation[name]["ctrl"] += walk[i, : cell.config.pedestrians].ravel().tolist()
         fields = self._camera_fields() if self.camera else {}
         self._last = self.bridge.request("step", n_steps=self.substeps, per_articulation=per_articulation, **fields)
         if self.camera:
@@ -258,7 +296,18 @@ class RammsFleet:
             upright=upright,
             images=images,
             image_age=image_age,
+            pedestrians=None if self.crowd is None else self._pedestrian_positions(),
         )
+
+    def _pedestrian_positions(self) -> np.ndarray:
+        out = np.full((self.num_rovers, 0 if self.crowd is None else self.crowd.size, 2), np.nan)
+        arts = self._last.get("arts", {})
+        for i, (name, cell) in enumerate(zip(self.names, self.cells, strict=True)):
+            count = cell.config.pedestrians
+            if count and name in arts:
+                slides = np.asarray(arts[name]["qpos"][PED_QPOS : PED_QPOS + 2 * count], dtype=float)
+                out[i, :count] = self._ped_home[i] + slides.reshape(count, 2)
+        return out
 
     def close(self, stop_simulation: bool = True) -> None:
         for name in self.names:

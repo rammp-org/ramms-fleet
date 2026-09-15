@@ -69,6 +69,8 @@ def run_seed(seed: int, args: argparse.Namespace) -> Path:
             *args.accel_noise,
             "--gyro-noise",
             *args.gyro_noise,
+            "--pedestrians",
+            *args.pedestrians,
         ],
         logs / "collect.log",
         data / "meta.json",
@@ -212,11 +214,11 @@ def summarize(out: Path, seeds: list[int]) -> dict:
     return summary
 
 
-FACTORS = ("clutter", "cruise_speed", "range_noise")
+FACTORS = ("clutter", "pedestrians", "cruise_speed", "range_noise")
 
 
 def _write_per_rover_csv(path: Path, rows: list[dict], methods: list[str]) -> None:
-    columns = ["seed", "rover", "clutter", "cruise_speed", "range_noise", "accel_noise", "gyro_noise"]
+    columns = ["seed", "rover", "clutter", "pedestrians", "cruise_speed", "range_noise", "accel_noise", "gyro_noise"]
     lines = [",".join(columns + [f"{m}_auprc" for m in methods])]
     for row in rows:
         values = [row.get(c) for c in columns] + [row[m]["auprc"] for m in methods]
@@ -300,6 +302,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--range-noise", type=float, nargs=2, default=(0.0, 0.0), metavar=("MIN", "MAX"))
     parser.add_argument("--accel-noise", type=float, nargs=2, default=(0.0, 0.0), metavar=("MIN", "MAX"))
     parser.add_argument("--gyro-noise", type=float, nargs=2, default=(0.0, 0.0), metavar=("MIN", "MAX"))
+    parser.add_argument("--pedestrians", type=int, nargs=2, default=(0, 0), metavar=("MIN", "MAX"))
     parser.add_argument(
         "--finetune-epochs", type=int, default=0, help="also score federated models fine-tuned per rover"
     )

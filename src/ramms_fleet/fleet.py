@@ -15,8 +15,9 @@ from dataclasses import dataclass
 import mujoco
 import numpy as np
 
+from ramms_fleet.crowd import Crowd, CrowdParams
 from ramms_fleet.spec import RANGE_ANGLES_DEG, RANGE_SENSORS, RoverParams, RoverProfile
-from ramms_fleet.world import ROVER_PREFIX, ArenaLayout, Cell, EnvConfig, build_world
+from ramms_fleet.world import ROVER_PREFIX, ArenaLayout, Cell, EnvConfig, Obstacle, build_world
 
 __all__ = ["RANGE_ANGLES_DEG", "RANGE_SENSORS", "FleetObs", "MujocoFleet", "RoverParams", "RoverProfile"]
 
@@ -36,6 +37,9 @@ class FleetObs:
     upright: np.ndarray  # (N,) bool, False once the rover has tipped over
     images: np.ndarray | None = None  # (N, H, W) uint8 grayscale front-camera frames, when the backend has a camera
     image_age: np.ndarray | None = None  # (N,) seconds of simulated time between each frame and this observation
+    pedestrians: np.ndarray | None = (
+        None  # (N, P, 2) pedestrian x, y relative to the cell centre, NaN past a cell's count
+    )
 
 
 class _RoverSim:
@@ -57,6 +61,18 @@ class _RoverSim:
         self.gyro_adr = m.sensor(p + "gyro").adr[0]
         self.bump_adr = m.sensor(p + "bump").adr[0]
         self.wheel_adr = [m.sensor(p + "wheel_left_vel").adr[0], m.sensor(p + "wheel_right_vel").adr[0]]
+        peds = range(cell.config.pedestrians)
+        # (P, 2) addresses per pedestrian, x then y.
+        self.ped_qpos = np.array(
+            [[m.joint(f"{p}ped{k}_{a}").qposadr[0] for a in "xy"] for k in peds], dtype=int
+        ).reshape(-1, 2)
+        self.ped_dof = np.array([[m.joint(f"{p}ped{k}_{a}").dofadr[0] for a in "xy"] for k in peds], dtype=int).reshape(
+            -1, 2
+        )
+        self.ped_act = np.array([[m.actuator(f"{p}ped{k}_{a}").id for a in "xy"] for k in peds], dtype=int).reshape(
+            -1, 2
+        )
+        self.ped_home = np.array(cell.pedestrian_homes, dtype=float).reshape(-1, 2)
 
 
 class MujocoFleet:
@@ -69,6 +85,7 @@ class MujocoFleet:
         params: RoverParams = RoverParams(),
         shared_world: bool = False,
         profiles: list[RoverProfile] | None = None,
+        crowd: CrowdParams = CrowdParams(),
     ):
         self.profiles = profiles or [RoverProfile()] * len(configs)
         if len(self.profiles) != len(configs):
@@ -77,7 +94,7 @@ class MujocoFleet:
         self.rovers: list[_RoverSim] = []
         groups = [configs] if shared_world else [[config] for config in configs]
         for group in groups:
-            spec, cells = build_world(group, layout)
+            spec, cells = build_world(group, layout, crowd)
             model = spec.compile()
             data = mujoco.MjData(model)
             self.worlds.append((model, data))
@@ -91,12 +108,26 @@ class MujocoFleet:
         self._rng = np.random.default_rng(seed)
         # A separate stream so noise-free fleets draw exactly as before.
         self._noise = SensorNoise(self.profiles, seed, params.max_range)
+        self.crowd = make_crowd([r.cell for r in self.rovers], layout, crowd, seed)
 
     def reset(self, rovers: list[int] | None = None) -> FleetObs:
-        """Places rovers at random clear poses in their cells, at rest."""
+        """Places rovers at random clear poses in their cells, at rest.
+
+        A full reset also scatters the pedestrians; a partial reset leaves them
+        walking and places the rover clear of them.
+        """
+        if rovers is None and self.crowd is not None:
+            for i, r in enumerate(self.rovers):
+                placed = self.crowd.place(i)
+                r.data.qpos[r.ped_qpos] = placed - r.ped_home
+                r.data.qvel[r.ped_dof] = 0
+                r.data.ctrl[r.ped_act] = 0
+        peds = self._pedestrian_positions()
         for i in range(self.num_rovers) if rovers is None else rovers:
             r = self.rovers[i]
-            x, y, yaw = sample_clear_pose(r.cell, self.layout, self._rng)
+            x, y, yaw = sample_clear_pose(
+                r.cell, self.layout, self._rng, avoid=pedestrian_circles(r.cell, peds[i], self.crowd)
+            )
             r.data.qpos[r.qpos : r.qpos + 7] = [
                 x,
                 y,
@@ -123,6 +154,11 @@ class MujocoFleet:
         )
         for r, ctrl in zip(self.rovers, wheels, strict=True):
             r.data.ctrl[r.act] = ctrl
+        if self.crowd is not None:
+            rover_xy = np.array([r.data.qpos[r.qpos : r.qpos + 2] - r.cell.center for r in self.rovers])
+            walk = self.crowd.velocities(self._pedestrian_positions(), rover_xy, self.dt)
+            for i, r in enumerate(self.rovers):
+                r.data.ctrl[r.ped_act] = walk[i, : len(r.ped_act)]
         for model, data in self.worlds:
             # Sensors are only read once per control step, and every
             # rangefinder ray is tested against every geom, so skip sensor
@@ -158,8 +194,22 @@ class MujocoFleet:
         ranges[(ranges < 0) | (ranges > self.params.max_range)] = self.params.max_range
         self._noise.apply(ranges, accel, gyro)
         return FleetObs(
-            ranges=ranges, accel=accel, gyro=gyro, wheel_vel=wheel_vel, bump=bump, pose=pose, upright=upright
+            ranges=ranges,
+            accel=accel,
+            gyro=gyro,
+            wheel_vel=wheel_vel,
+            bump=bump,
+            pose=pose,
+            upright=upright,
+            pedestrians=None if self.crowd is None else self._pedestrian_positions(),
         )
+
+    def _pedestrian_positions(self) -> np.ndarray:
+        size = 0 if self.crowd is None else self.crowd.size
+        out = np.full((self.num_rovers, size, 2), np.nan)
+        for i, r in enumerate(self.rovers):
+            out[i, : len(r.ped_qpos)] = r.ped_home + r.data.qpos[r.ped_qpos]
+        return out
 
 
 class SensorNoise:
@@ -188,15 +238,37 @@ class SensorNoise:
             gyro += self._gyro[:, None] * self._rng.standard_normal(gyro.shape)
 
 
+def make_crowd(cells: list[Cell], layout: ArenaLayout, params: CrowdParams, seed: int) -> Crowd | None:
+    """The shared pedestrian model for a fleet, or None when no cell has pedestrians."""
+    if not any(c.config.pedestrians for c in cells):
+        return None
+    obstacles = [np.array([[o.x - c.center[0], o.y - c.center[1], o.radius] for o in c.obstacles]) for c in cells]
+    half = layout.cell_size / 2 - layout.wall_thickness
+    return Crowd(obstacles, [c.config.pedestrians for c in cells], half, params, seed)
+
+
+def pedestrian_circles(cell: Cell, positions: np.ndarray, crowd: Crowd | None) -> list[Obstacle]:
+    """Pedestrians in one cell as world-frame obstacles, from cell-relative positions (P, 2)."""
+    if crowd is None:
+        return []
+    cx, cy = cell.center
+    return [Obstacle(x=cx + x, y=cy + y, radius=crowd.params.radius) for x, y in positions[: cell.config.pedestrians]]
+
+
 def sample_clear_pose(
-    cell: Cell, layout: ArenaLayout, rng: np.random.Generator, clearance: float = 0.3
+    cell: Cell,
+    layout: ArenaLayout,
+    rng: np.random.Generator,
+    clearance: float = 0.3,
+    avoid: list[Obstacle] = (),
 ) -> tuple[float, float, float]:
-    """A random (x, y, yaw) in the cell, at least `clearance` from walls and obstacle bounds."""
+    """A random (x, y, yaw) in the cell, at least `clearance` from walls, obstacle bounds, and `avoid`."""
     inner = layout.cell_size / 2 - layout.wall_thickness - clearance
     cx, cy = cell.center
+    circles = [*cell.obstacles, *avoid]
     for _ in range(1000):
         x = cx + rng.uniform(-inner, inner)
         y = cy + rng.uniform(-inner, inner)
-        if all(math.hypot(x - o.x, y - o.y) > o.radius + clearance for o in cell.obstacles):
+        if all(math.hypot(x - o.x, y - o.y) > o.radius + clearance for o in circles):
             return x, y, rng.uniform(-math.pi, math.pi)
     raise RuntimeError(f"no clear pose in cell {cell.index} (clutter {cell.config.clutter})")

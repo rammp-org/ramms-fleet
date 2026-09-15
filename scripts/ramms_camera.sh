@@ -12,7 +12,7 @@ DATA=data/ramms-camera
 OUT=results/ramms-camera
 mkdir -p "$OUT/logs"
 log() { echo "[$(date '+%F %T')] $*"; }
-SEEDS=(0 1 2 3 4)
+SEEDS=(0 1 2)  # collection covers 5 seeds; CNN training on CPU keeps the sweeps to 3
 SECONDS_PER_RUN=300
 
 for seed in "${SEEDS[@]}"; do

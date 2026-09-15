@@ -99,7 +99,7 @@ def test_camera_inputs_share_samples_and_learn_from_frames(tmp_path):
     both = load_rover(path, inputs="both")
     # Stale frames are dropped for every choice of inputs.
     assert len(features_only.y_train) == len(camera.y_train) == len(both.y_train) < 0.95 * 3000 * 0.8
-    assert camera.img_train.shape[1:] == (1, 48, 64) and features_only.img_train is None
+    assert camera.img_train.shape[1:] == (1, 24, 32) and features_only.img_train is None
 
     torch.manual_seed(0)
     model = make_model(camera.input_dim, 32, "camera")

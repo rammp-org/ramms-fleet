@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import subprocess
 import sys
 import time
@@ -23,13 +24,18 @@ import numpy as np
 BIN = Path(sys.executable).parent
 
 
+THREADS_PER_JOB = "1"
+
+
 def _run(step: str, command: list[str], log: Path, done: Path) -> None:
     if done.exists():
         print(f"  skip {step} (done)", flush=True)
         return
     started = time.monotonic()
+    # Seeds run in parallel; without a cap every PyTorch process would use every core.
+    env = dict(os.environ, OMP_NUM_THREADS=THREADS_PER_JOB)
     with open(log, "w") as f:
-        result = subprocess.run([str(c) for c in command], stdout=f, stderr=subprocess.STDOUT)
+        result = subprocess.run([str(c) for c in command], stdout=f, stderr=subprocess.STDOUT, env=env)
     if result.returncode != 0 or not done.exists():
         raise RuntimeError(f"{step} failed (exit {result.returncode}); see {log}")
     print(f"  {step} done in {time.monotonic() - started:.0f}s", flush=True)
@@ -300,6 +306,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--summarize-only", action="store_true")
     args = parser.parse_args(argv)
     args.data_root, args.out = args.data_root.resolve(), args.out.resolve()
+    global THREADS_PER_JOB
+    THREADS_PER_JOB = str(max(1, (os.cpu_count() or 1) // max(1, args.jobs)))
 
     if not args.summarize_only:
         started = time.monotonic()

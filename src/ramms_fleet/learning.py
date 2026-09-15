@@ -46,6 +46,9 @@ class RoverData:
 
 LABELS = ("time", "distance")
 INPUTS = ("features", "camera", "both")
+# Camera frames are average-pooled by this factor on load (64x48 recorded, 32x24 to the
+# model), which keeps CNN training on the CPU fast.
+CAMERA_DOWNSAMPLE = 2
 
 
 def load_rover(
@@ -102,7 +105,12 @@ def load_rover(
     split = ends < round(steps * (1 - test_fraction))
     img = None
     if inputs != "features":
-        img = data["images"][ends][:, None, :, :].astype(np.float32) / 255.0
+        frames = data["images"][ends].astype(np.float32) / 255.0
+        k = CAMERA_DOWNSAMPLE
+        if k > 1:
+            n, h, w = frames.shape
+            frames = frames[:, : h - h % k, : w - w % k].reshape(n, h // k, k, w // k, k).mean(axis=(2, 4))
+        img = frames[:, None, :, :]
     return RoverData(
         x_train=x[split],
         y_train=y[split],

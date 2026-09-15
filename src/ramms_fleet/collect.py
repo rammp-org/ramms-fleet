@@ -60,6 +60,7 @@ def collect(
     valid = np.zeros((n, steps), dtype=bool)
     episode = np.zeros((n, steps), dtype=np.int32)
     pose = np.zeros((n, steps, 3), dtype=np.float32)
+    pedestrians = None
     current_episode = np.zeros(n, dtype=np.int32)
 
     images = image_age = None
@@ -75,6 +76,10 @@ def collect(
         valid[:, t] = (policy.mode == CRUISE) & ~obs.bump
         episode[:, t] = current_episode
         pose[:, t] = obs.pose
+        if obs.pedestrians is not None:
+            if pedestrians is None:
+                pedestrians = np.full((n, steps, *obs.pedestrians.shape[1:]), np.nan, dtype=np.float32)
+            pedestrians[:, t] = obs.pedestrians
         if obs.images is not None:
             if images is None:
                 images = np.zeros((n, steps, *obs.images.shape[1:]), dtype=np.uint8)
@@ -106,15 +111,22 @@ def collect(
             episode=episode[i],
             pose=pose[i],
             **({} if images is None else {"images": images[i], "image_age": image_age[i]}),
+            **({} if pedestrians is None else {"pedestrians": pedestrians[i]}),
         )
-        onsets = int((bump[i][1:] & ~bump[i][:-1]).sum() + bump[i][0])
+        onset_mask = bump[i] & ~np.concatenate([[False], bump[i][:-1]])
+        onsets = int(onset_mask.sum())
+        ped_onsets = (
+            int((onset_mask & near_pedestrian(pose[i], pedestrians[i])).sum()) if pedestrians is not None else 0
+        )
         rovers.append(
             {
                 "rover": i,
                 "clutter": configs[i].clutter,
                 "env_seed": configs[i].seed,
+                "pedestrians": configs[i].pedestrians,
                 **asdict(fleet.profiles[i]),
                 "collisions_per_min": onsets / (seconds / 60),
+                "pedestrian_collisions_per_min": ped_onsets / (seconds / 60),
                 "positive_rate": float(labels[valid[i]].mean()) if valid[i].any() else 0.0,
                 "valid_samples": int(valid[i].sum()),
                 "mean_front_range": float(features[i, :, RANGE_SENSORS.index("range_0")].mean()),
@@ -140,9 +152,30 @@ def collect(
     return meta
 
 
-def spread_configs(rovers: int, clutter_min: float, clutter_max: float, seed: int) -> list[EnvConfig]:
+PEDESTRIAN_CONTACT_DISTANCE = 0.25
+"""Rover-to-pedestrian centre distance under which a collision counts as involving a pedestrian."""
+
+
+def near_pedestrian(pose: np.ndarray, pedestrians: np.ndarray) -> np.ndarray:
+    """Per step, whether any pedestrian is within contact distance of the rover. pose (T, 3), pedestrians (T, P, 2)."""
+    if pedestrians.shape[1] == 0:
+        return np.zeros(len(pose), dtype=bool)
+    gap = np.linalg.norm(pedestrians - pose[:, None, :2], axis=2)
+    return np.nanmin(np.where(np.isnan(gap), np.inf, gap), axis=1) < PEDESTRIAN_CONTACT_DISTANCE
+
+
+def spread_configs(
+    rovers: int, clutter_min: float, clutter_max: float, seed: int, pedestrians: tuple[int, int] = (0, 0)
+) -> list[EnvConfig]:
+    """Clutter rises with rover index; pedestrian counts are spread over the fleet in a seeded random order."""
     clutter = np.linspace(clutter_min, clutter_max, rovers) if rovers > 1 else [clutter_min]
-    return [EnvConfig(clutter=float(c), seed=seed * 1000 + i) for i, c in enumerate(clutter)]
+    counts = np.round(np.linspace(*pedestrians, rovers)).astype(int) if rovers > 1 else np.array([pedestrians[0]])
+    if pedestrians[1] > pedestrians[0]:
+        counts = counts[np.random.default_rng([seed, 5]).permutation(rovers)]
+    return [
+        EnvConfig(clutter=float(c), seed=seed * 1000 + i, pedestrians=int(p))
+        for i, (c, p) in enumerate(zip(clutter, counts, strict=True))
+    ]
 
 
 def spread_profiles(
@@ -194,9 +227,12 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("--ramms-address", default="tcp://127.0.0.1:5559", help="URLab bridge RPC address")
     parser.add_argument("--camera", action="store_true", help="also record front-camera frames (ramms backend)")
+    parser.add_argument(
+        "--pedestrians", type=int, nargs=2, default=(0, 0), metavar=("MIN", "MAX"), help="pedestrians per arena"
+    )
     args = parser.parse_args(argv)
 
-    configs = spread_configs(args.rovers, args.clutter_min, args.clutter_max, args.seed)
+    configs = spread_configs(args.rovers, args.clutter_min, args.clutter_max, args.seed, tuple(args.pedestrians))
     profiles = spread_profiles(
         args.rovers,
         tuple(args.speed),
@@ -221,13 +257,14 @@ def main(argv: list[str] | None = None) -> None:
 
     print(f"wrote {args.out} ({meta['sim_seconds_per_wall_second']:.0f}x real time)")
     print(
-        f"{'rover':>5} {'clutter':>7} {'speed':>5} {'rng noise':>9} {'coll/min':>8} {'pos rate':>8}"
-        f" {'samples':>8} {'episodes':>8}"
+        f"{'rover':>5} {'clutter':>7} {'peds':>4} {'speed':>5} {'rng noise':>9} {'coll/min':>8} {'ped/min':>7}"
+        f" {'pos rate':>8} {'samples':>8} {'episodes':>8}"
     )
     for r in meta["rovers"]:
         print(
-            f"{r['rover']:>5} {r['clutter']:>7.2f} {r['cruise_speed']:>5.2f} {r['range_noise']:>9.3f}"
-            f" {r['collisions_per_min']:>8.1f} {r['positive_rate']:>8.3f} {r['valid_samples']:>8} {r['episodes']:>8}"
+            f"{r['rover']:>5} {r['clutter']:>7.2f} {r['pedestrians']:>4} {r['cruise_speed']:>5.2f}"
+            f" {r['range_noise']:>9.3f} {r['collisions_per_min']:>8.1f} {r['pedestrian_collisions_per_min']:>7.1f}"
+            f" {r['positive_rate']:>8.3f} {r['valid_samples']:>8} {r['episodes']:>8}"
         )
 
 

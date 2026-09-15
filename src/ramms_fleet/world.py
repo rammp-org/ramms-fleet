@@ -14,6 +14,8 @@ from importlib import resources
 import mujoco
 import numpy as np
 
+from ramms_fleet.crowd import CrowdParams, home_positions
+
 ROVER_PREFIX = "rover{index}/"
 
 
@@ -28,6 +30,8 @@ class EnvConfig:
     clutter: float = 0.4
     """Obstacles per square metre of free floor."""
     seed: int = 0
+    pedestrians: int = 0
+    """Scripted pedestrians walking in the cell."""
 
 
 @dataclass(frozen=True)
@@ -51,6 +55,8 @@ class Cell:
     center: tuple[float, float]
     config: EnvConfig
     obstacles: list[Obstacle] = field(default_factory=list)
+    pedestrian_homes: list[tuple[float, float]] = field(default_factory=list)
+    """Each pedestrian body's reference position relative to the cell centre; its slide joints measure from here."""
 
 
 def cell_centers(count: int, layout: ArenaLayout) -> list[tuple[float, float]]:
@@ -58,7 +64,9 @@ def cell_centers(count: int, layout: ArenaLayout) -> list[tuple[float, float]]:
     return [((i % cols) * layout.cell_size, (i // cols) * layout.cell_size) for i in range(count)]
 
 
-def build_world(configs: list[EnvConfig], layout: ArenaLayout = ArenaLayout()) -> tuple[mujoco.MjSpec, list[Cell]]:
+def build_world(
+    configs: list[EnvConfig], layout: ArenaLayout = ArenaLayout(), crowd: CrowdParams = CrowdParams()
+) -> tuple[mujoco.MjSpec, list[Cell]]:
     """Returns the composed spec and the cell geometry needed for resets."""
     spec = mujoco.MjSpec()
     spec.modelname = "ramms_fleet"
@@ -84,11 +92,10 @@ def build_world(configs: list[EnvConfig], layout: ArenaLayout = ArenaLayout()) -
         _add_walls(world, cell, layout)
         _add_obstacles(world, cell, layout)
         frame = world.add_frame(pos=[center[0], center[1], 0])
-        spec.attach(
-            mujoco.MjSpec.from_string(rover),
-            prefix=ROVER_PREFIX.format(index=index),
-            frame=frame,
-        )
+        # Pedestrians go into the rover's spec so they share its prefix and cell frame.
+        child = mujoco.MjSpec.from_string(rover)
+        _add_pedestrians(child, cell, layout, crowd)
+        spec.attach(child, prefix=ROVER_PREFIX.format(index=index), frame=frame)
         cells.append(cell)
     return spec, cells
 
@@ -148,7 +155,45 @@ def _add_obstacles(world: mujoco.MjsBody, cell: Cell, layout: ArenaLayout, prefi
         cell.obstacles.append(Obstacle(x=x, y=y, radius=radius))
 
 
-def build_cell_xml(config: EnvConfig, model_name: str, layout: ArenaLayout = ArenaLayout()) -> tuple[str, Cell]:
+def _add_pedestrians(spec: mujoco.MjSpec, cell: Cell, layout: ArenaLayout, params: CrowdParams) -> None:
+    """Adds the cell's pedestrians to `spec`, positioned relative to the cell centre.
+
+    Each pedestrian is an upright capsule on two slide joints with a velocity
+    actuator per axis, so joint and actuator order is ped0_x, ped0_y, ped1_x, ...
+    after the rover's own. The capsule clears the floor, so walking has no friction.
+    """
+    count = cell.config.pedestrians
+    if count == 0:
+        return
+    cx, cy = cell.center
+    obstacles = np.array([[o.x - cx, o.y - cy, o.radius] for o in cell.obstacles]).reshape(-1, 3)
+    half = layout.cell_size / 2 - layout.wall_thickness
+    cell.pedestrian_homes = home_positions(obstacles, count, half, params, cell.config.seed)
+    for k, (x, y) in enumerate(cell.pedestrian_homes):
+        body = spec.worldbody.add_body(name=f"ped{k}", pos=[x, y, params.height / 2 + 0.005])
+        for axis, direction in (("x", [1, 0, 0]), ("y", [0, 1, 0])):
+            body.add_joint(name=f"ped{k}_{axis}", type=mujoco.mjtJoint.mjJNT_SLIDE, axis=direction)
+        body.add_geom(
+            name=f"ped{k}",
+            type=mujoco.mjtGeom.mjGEOM_CAPSULE,
+            size=[params.radius, params.height / 2 - params.radius, 0],
+            mass=params.mass,
+            rgba=[0.30, 0.34, 0.62, 1],
+        )
+        for axis in ("x", "y"):
+            actuator = spec.add_actuator(
+                name=f"ped{k}_{axis}",
+                target=f"ped{k}_{axis}",
+                trntype=mujoco.mjtTrn.mjTRN_JOINT,
+                forcelimited=True,
+                forcerange=[-params.max_force, params.max_force],
+            )
+            actuator.set_to_velocity(kv=params.drive_gain)
+
+
+def build_cell_xml(
+    config: EnvConfig, model_name: str, layout: ArenaLayout = ArenaLayout(), crowd: CrowdParams = CrowdParams()
+) -> tuple[str, Cell]:
     """One rover's arena as standalone MJCF, for engines that import MJCF files (RAMMS through URLab).
 
     Built on rover.xml itself, so body, joint, actuator, and sensor names stay
@@ -171,4 +216,5 @@ def build_cell_xml(config: EnvConfig, model_name: str, layout: ArenaLayout = Are
     )
     _add_walls(spec.worldbody, cell, layout, prefix="")
     _add_obstacles(spec.worldbody, cell, layout, prefix="")
+    _add_pedestrians(spec, cell, layout, crowd)
     return spec.to_xml(), cell

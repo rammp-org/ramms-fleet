@@ -49,7 +49,7 @@ def _font(size: int) -> ImageFont.ImageFont:
 def fleet_from_run(data_dir: Path, rovers: list[int] | None, seed: int) -> tuple[MujocoFleet, list[dict]]:
     meta = json.loads((data_dir / "meta.json").read_text())
     chosen = [r for r in meta["rovers"] if rovers is None or r["rover"] in rovers]
-    configs = [EnvConfig(clutter=r["clutter"], seed=r["env_seed"]) for r in chosen]
+    configs = [EnvConfig(clutter=r["clutter"], seed=r["env_seed"], pedestrians=r.get("pedestrians", 0)) for r in chosen]
     profiles = [
         RoverProfile(
             cruise_speed=r.get("cruise_speed", RoverProfile.cruise_speed),

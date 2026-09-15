@@ -30,9 +30,10 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--avoid-gain", type=float, default=WanderParams.avoid_gain)
     parser.add_argument("--speed", type=float, default=1.0, help="playback speed relative to real time")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--pedestrians", type=int, nargs=2, default=(0, 0), metavar=("MIN", "MAX"))
     args = parser.parse_args(argv)
 
-    configs = spread_configs(args.rovers, args.clutter_min, args.clutter_max, args.seed)
+    configs = spread_configs(args.rovers, args.clutter_min, args.clutter_max, args.seed, tuple(args.pedestrians))
     fleet = MujocoFleet(configs, seed=args.seed, shared_world=True)
     model, data = fleet.worlds[0]
     policy = WanderPolicy(fleet.num_rovers, fleet.dt, WanderParams(avoid_gain=args.avoid_gain), seed=args.seed + 1)

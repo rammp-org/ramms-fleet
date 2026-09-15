@@ -69,7 +69,12 @@ select = ["E", "F", "I", "B", "UP"]
 
 [tool.ruff.lint.flake8-bugbear]
 # Frozen dataclasses are safe as argument defaults.
-extend-immutable-calls = ["ramms_fleet.world.ArenaLayout", "ramms_fleet.spec.RoverParams", "ramms_fleet.spec.WanderParams"]
+extend-immutable-calls = [
+  "ramms_fleet.world.ArenaLayout",
+  "ramms_fleet.spec.RoverParams",
+  "ramms_fleet.spec.WanderParams",
+  "ramms_fleet.crowd.CrowdParams",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

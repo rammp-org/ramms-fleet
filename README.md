@@ -19,12 +19,12 @@ and the shared task is predicting their own collisions.
 | Distance-based collision labels | done | #4 |
 | RAMMS backend over the URLab bridge, federated training on RAMMS data | done | #5 |
 | Front camera as a model input | done | #6 |
-| Pedestrians in both backends | running | #7 |
+| Pedestrians in both backends | done | #7 |
 
 Headline results (details and every table in [docs/results.md](docs/results.md)):
 
-- FedAvg beats each rover training alone in every seed of every experiment
-  (48 of 48), by about +0.03 to +0.07 AUPRC.
+- FedAvg beats each rover training alone in 61 of 62 seeds across every
+  experiment, by about +0.03 to +0.10 AUPRC.
 - It closes most of the gap to pooling all rovers' data: 0.890 against 0.907
   for centralized training, with local-only at 0.821 (5 seeds).
 - Five local epochs over 10 rounds match one epoch over 50 rounds, so
@@ -34,6 +34,9 @@ Headline results (details and every table in [docs/results.md](docs/results.md))
 - FedProx and per-rover fine-tuning never beat plain FedAvg beyond seed noise.
 - Results hold inside RAMMS, models move between MuJoCo and RAMMS with almost
   no loss, and adding the front camera raises FedAvg by +0.03 (3 of 3 seeds).
+- Pedestrians lower every score, and local-only most, so federation matters
+  more: FedAvg's lead over local-only grows from +0.067 to +0.097 in MuJoCo. In
+  RAMMS the camera stops helping once pedestrians move (3 seeds).
 
 ## Install
 
@@ -305,7 +308,7 @@ Scripts that reproduce the recorded experiments:
 | `scripts/distance_labels.sh` | the same datasets relabeled by distance | about 100 min |
 | `scripts/ramms_federated.sh` | collection in RAMMS, federated training, cross-simulator scoring | about 1 h |
 | `scripts/ramms_camera.sh` | camera collection in RAMMS, features vs camera vs both | about 4 h |
-| `scripts/crowds.sh` | pedestrians: RAMMS camera runs (features, camera, both) and a MuJoCo sweep | about 6 h |
+| `scripts/crowds.sh` | pedestrians: RAMMS camera runs (features, camera, both) and a MuJoCo sweep | about 2.5 h |
 
 The earlier sweeps are single `ramms-fleet-sweep` commands, listed with their
 results in [docs/results.md](docs/results.md).

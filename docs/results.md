@@ -20,6 +20,7 @@ Compute was one 8-thread CPU.
 | 5 | How much of the speed effect was the label? | most of it |
 | 6 | Does it hold inside RAMMS? | yes, and models move between simulators with almost no loss |
 | 7 | Does the front camera help? | yes for local-only and FedAvg (+0.03 to +0.06), not centralized |
+| 8 | What do pedestrians change? | every score drops; federation matters more in MuJoCo; in RAMMS the camera stops helping |
 
 ## 1. First run
 
@@ -235,6 +236,73 @@ only, and both, on identical samples (`scripts/ramms_camera.sh`, about 3 h).
   Background", which throttles rendering. Rendering also needs a CPU that is
   not saturated by training.
 
+## 8. Pedestrians
+
+Each arena gained 0 to 7 scripted pedestrians (`--pedestrians 0 7`), a
+different count per rover, shuffled independently of clutter. Pedestrians are
+capsules on velocity-driven slide joints that walk between random goals at
+0.15 to 0.35 m/s, pause, and steer around walls, obstacles, and each other;
+half also steer around the rover. They collide, block rangefinders, and render
+on camera in both simulators, and for the same seed they walked the same paths
+in MuJoCo and RAMMS (within a millimetre over a 5 s check).
+`scripts/crowds.sh` ran both parts in about 2.5 h.
+
+**MuJoCo, 5 seeds x 600 s, features only.** Arena layouts and seeds match
+experiment 3, so the comparison is paired by seed.
+
+| Arenas | Local only | FedAvg | FedAvg + fine-tune | Centralized |
+|---|---:|---:|---:|---:|
+| No pedestrians (experiment 3) | 0.821 ± 0.044 | 0.889 ± 0.026 | 0.874 ± 0.029 | 0.907 ± 0.023 |
+| 0 to 7 pedestrians | 0.689 ± 0.023 | 0.787 ± 0.022 | 0.762 ± 0.021 | 0.816 ± 0.016 |
+
+| Paired difference | No pedestrians | With pedestrians |
+|---|---:|---:|
+| FedAvg - local | +0.067 ± 0.020 | +0.097 ± 0.020 (5 of 5 seeds) |
+| Centralized - FedAvg | +0.018 ± 0.005 | +0.030 ± 0.010 |
+| Fine-tune - FedAvg | -0.014 ± 0.005 | -0.025 ± 0.008 |
+
+| Pedestrians in the arena (all rovers, all seeds) | Collisions/min | With a pedestrian | Local only | FedAvg | Centralized |
+|---|---:|---:|---:|---:|---:|
+| 0 to 1 | 10.5 | 0.5 | 0.767 | 0.868 | 0.878 |
+| 2 to 4 | 15.4 | 4.9 | 0.700 | 0.805 | 0.838 |
+| 5 to 7 | 22.6 | 11.3 | 0.627 | 0.714 | 0.754 |
+
+- Pedestrians were involved in 37% of collisions (within 0.25 m of the rover
+  at contact).
+- Every method drops, local-only most (-0.132 ± 0.058 against -0.102 for
+  FedAvg), so FedAvg's lead over training alone grew by +0.030 ± 0.029 (4 of 5
+  seeds).
+- The gap to centralized widens with crowd size, from 0.010 to 0.039.
+- The federated score was still rising at round 10 (0.779 at round 8, 0.789 at
+  round 10); more rounds may narrow the gap.
+- Collection slowed from about 15x to 6x real time.
+
+**RAMMS, 3 seeds x 300 s with the front camera.** Trained as in experiment 7,
+every input choice on the same samples. Collection ran at 0.58x real time.
+Pedestrians were involved in 31% of collisions.
+
+| Inputs | Local only | FedAvg | FedAvg + fine-tune | Centralized | FedAvg - local |
+|---|---:|---:|---:|---:|---:|
+| Features | 0.743 ± 0.020 | 0.799 ± 0.052 | 0.789 ± 0.040 | 0.835 ± 0.040 | +0.056 ± 0.040 (3 of 3) |
+| Camera | 0.736 ± 0.046 | 0.772 ± 0.084 | 0.780 ± 0.064 | 0.756 ± 0.074 | +0.037 ± 0.038 (3 of 3) |
+| Both | 0.744 ± 0.039 | 0.784 ± 0.084 | 0.788 ± 0.052 | 0.823 ± 0.059 | +0.040 ± 0.060 (2 of 3) |
+
+| Adding the camera to the features (same seed) | No pedestrians (exp. 7) | With pedestrians | Seeds improved |
+|---|---:|---:|---:|
+| Local only | +0.062 ± 0.023 | +0.002 ± 0.018 | 1 of 3 |
+| FedAvg | +0.030 ± 0.005 | -0.015 ± 0.032 | 1 of 3 |
+| Centralized | -0.013 ± 0.013 | -0.013 ± 0.022 | 1 of 3 |
+
+- With pedestrians the camera no longer helps. A possible reason: the features
+  cover the last four steps, so they show a pedestrian closing in, while camera
+  models see only the latest frame.
+- Seed 1 with features and camera is the first seed in any experiment where
+  FedAvg lost to local-only training (by 0.028).
+- Three seeds with large spread; treat these sizes as provisional.
+- The pedestrians are not RAMMS's own crowd. RammsCrowd agents are Unreal Mass
+  entities with no interface for reading their positions from outside the
+  editor, and they would exist only in RAMMS.
+
 ## Limits
 
 - One narrow task that rangefinders make fairly easy, and one exploration
@@ -244,11 +312,16 @@ only, and both, on identical samples (`scripts/ramms_camera.sh`, about 3 h).
   permissions, and evaluation reads every rover's test split.
 - The label definition moves absolute scores and the size of the gaps; compare
   methods only within one label type.
+- Pedestrians are scripted capsules with a simple steering rule, and camera
+  models see a single frame, so they cannot see motion.
 
 ## Next
 
-- Crowds in RAMMS: pedestrians exist only as Unreal actors, so they need
-  mirroring into MuJoCo as moving bodies before rovers can see or hit them.
+- RAMMS's own crowd: expose Mass agent positions from RammsCrowd so its
+  animated pedestrians drive the physics bodies in place of the scripted
+  walkers.
+- More federated rounds with pedestrians, and a short frame history for camera
+  models, with more RAMMS seeds.
 - Look rover by rover at where the shared model hurts before trying heavier
   personalization (fewer fine-tuning epochs, shared body with per-rover heads,
   clustering rovers by speed).

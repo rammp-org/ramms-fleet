@@ -35,13 +35,18 @@ def collect(
     profiles: list[RoverProfile] | None = None,
     backend: str = "mujoco",
     ramms_address: str = "tcp://127.0.0.1:5559",
+    camera: bool = False,
 ) -> dict:
     if backend == "ramms":
         # Imported lazily: the RAMMS backend needs pyzmq and msgpack (the [ramms] extra).
         from ramms_fleet.ramms.fleet import RammsFleet
 
-        fleet = RammsFleet(configs, control_hz=control_hz, seed=seed, profiles=profiles, address=ramms_address)
+        fleet = RammsFleet(
+            configs, control_hz=control_hz, seed=seed, profiles=profiles, address=ramms_address, camera=camera
+        )
     elif backend == "mujoco":
+        if camera:
+            raise ValueError("--camera needs --backend ramms")
         fleet = MujocoFleet(configs, control_hz=control_hz, seed=seed, profiles=profiles)
     else:
         raise ValueError(f"unknown backend {backend!r}")
@@ -57,6 +62,7 @@ def collect(
     pose = np.zeros((n, steps, 3), dtype=np.float32)
     current_episode = np.zeros(n, dtype=np.int32)
 
+    images = image_age = None
     obs = fleet.reset()
     policy.reset(np.arange(n), obs)
     started = time.perf_counter()
@@ -69,6 +75,12 @@ def collect(
         valid[:, t] = (policy.mode == CRUISE) & ~obs.bump
         episode[:, t] = current_episode
         pose[:, t] = obs.pose
+        if obs.images is not None:
+            if images is None:
+                images = np.zeros((n, steps, *obs.images.shape[1:]), dtype=np.uint8)
+                image_age = np.full((n, steps), np.inf, dtype=np.float32)
+            images[:, t] = obs.images
+            image_age[:, t] = obs.image_age
 
         obs = fleet.step(commands)
         tipped = np.flatnonzero(~obs.upright)
@@ -93,6 +105,7 @@ def collect(
             bump=bump[i],
             episode=episode[i],
             pose=pose[i],
+            **({} if images is None else {"images": images[i], "image_age": image_age[i]}),
         )
         onsets = int((bump[i][1:] & ~bump[i][:-1]).sum() + bump[i][0])
         rovers.append(
@@ -111,6 +124,7 @@ def collect(
 
     meta = {
         "backend": backend,
+        "camera": None if images is None else {"name": "front", "height": images.shape[2], "width": images.shape[3]},
         "seconds": seconds,
         "control_hz": control_hz,
         "dt": fleet.dt,
@@ -179,6 +193,7 @@ def main(argv: list[str] | None = None) -> None:
         "--backend", choices=("mujoco", "ramms"), default="mujoco", help="ramms needs the editor running"
     )
     parser.add_argument("--ramms-address", default="tcp://127.0.0.1:5559", help="URLab bridge RPC address")
+    parser.add_argument("--camera", action="store_true", help="also record front-camera frames (ramms backend)")
     args = parser.parse_args(argv)
 
     configs = spread_configs(args.rovers, args.clutter_min, args.clutter_max, args.seed)
@@ -201,6 +216,7 @@ def main(argv: list[str] | None = None) -> None:
         profiles=profiles,
         backend=args.backend,
         ramms_address=args.ramms_address,
+        camera=args.camera,
     )
 
     print(f"wrote {args.out} ({meta['sim_seconds_per_wall_second']:.0f}x real time)")

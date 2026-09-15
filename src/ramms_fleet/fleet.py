@@ -34,6 +34,8 @@ class FleetObs:
     bump: np.ndarray  # (N,) bool
     pose: np.ndarray  # (N, 3) x, y relative to the cell centre, and yaw
     upright: np.ndarray  # (N,) bool, False once the rover has tipped over
+    images: np.ndarray | None = None  # (N, H, W) uint8 grayscale front-camera frames, when the backend has a camera
+    image_age: np.ndarray | None = None  # (N,) seconds of simulated time between each frame and this observation
 
 
 class _RoverSim:

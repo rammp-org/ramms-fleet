@@ -18,7 +18,8 @@ Compute was one 8-thread CPU.
 | 3 | Can communication rounds be cut? | 5x fewer rounds, same accuracy; FedProx no at any strength |
 | 4 | What happens when rovers really differ? | federation still wins everywhere; slow rovers gain most; fine-tuning hurts |
 | 5 | How much of the speed effect was the label? | most of it |
-| 6 | Does the pipeline run inside RAMMS? | yes; MuJoCo-trained models keep their ranking there |
+| 6 | Does it hold inside RAMMS? | yes, and models move between simulators with almost no loss |
+| 7 | Does the front camera help? | yes for local-only and FedAvg (+0.03 to +0.06), not centralized |
 
 ## 1. First run
 
@@ -180,24 +181,59 @@ fine-tuning, and centralized training (5 seeds each, about 100 min,
 - Fine-tuning is roughly neutral in the speed condition (+0.003 ± 0.008) and
   still lowers AUPRC elsewhere.
 
-## 6. RAMMS backend, first collection
+## 6. The same fleet inside RAMMS
 
-8 rovers, 600 s, seed 0 settings (clutter only), collected inside RAMMS through
-URLab with `--backend ramms` (3.2 min, 3x real time). The models trained in
-MuJoCo for experiment 3 (seed 0) were then scored on this RAMMS data.
+The experiment 3 settings (clutter only, 10 rounds x 5 local epochs, seeds 0-4,
+same arenas), with every run collected inside the RAMMS editor through URLab
+(`scripts/ramms_federated.sh`, 15 min of collection at 3.6x real time, then
+training). Models were also scored across simulators on each seed's test split.
 
-| Model | On the RAMMS run | On its own MuJoCo test split |
+| Trained → scored | Local only | FedAvg | Centralized |
+|---|---:|---:|---:|
+| MuJoCo → MuJoCo | 0.821 ± 0.044 | 0.889 ± 0.026 | 0.907 ± 0.023 |
+| RAMMS → RAMMS | 0.832 ± 0.033 | 0.887 ± 0.022 | 0.919 ± 0.014 |
+| MuJoCo → RAMMS | | 0.886 ± 0.017 | 0.912 ± 0.019 |
+| RAMMS → MuJoCo | | 0.880 ± 0.028 | 0.908 ± 0.015 |
+
+- Federated training behaves the same inside RAMMS: FedAvg beats local-only
+  by +0.054 ± 0.011 (5 of 5 seeds) and trails centralized by 0.033 ± 0.011.
+- Models move between simulators with almost no loss. Rangefinders match
+  standalone MuJoCo exactly for the same pose, and trajectories drift apart by
+  about 1 cm over 2 s.
+- An earlier single-seed check suggested a 0.05 drop on RAMMS data; that came
+  from scoring an entirely new run against the tail of the training run, not
+  from the simulator.
+
+## 7. The front camera as an input
+
+RAMMS rendered each rover's front camera in step with the simulation
+(`render: "sync"`: every frame matches its step, collection at 0.42x real
+time). Five 300 s seeds were collected at 64 x 48 grayscale; models see frames
+average-pooled to 32 x 24. Seeds 0-2 were trained with features only, camera
+only, and both, on identical samples (`scripts/ramms_camera.sh`, about 3 h).
+
+| Inputs | Local only | FedAvg | FedAvg + fine-tune | Centralized |
+|---|---:|---:|---:|---:|
+| Features | 0.740 ± 0.051 | 0.846 ± 0.055 | 0.822 ± 0.051 | 0.901 ± 0.029 |
+| Camera | 0.765 ± 0.069 | 0.839 ± 0.074 | 0.827 ± 0.051 | 0.812 ± 0.068 |
+| Both | 0.802 ± 0.065 | 0.875 ± 0.053 | 0.848 ± 0.063 | 0.887 ± 0.028 |
+
+| Adding the camera to the features (same seed) | Difference | Seeds improved |
 |---|---:|---:|
-| Local only | 0.810 | 0.877 |
-| FedAvg | 0.867 | 0.924 |
-| Centralized | 0.896 | 0.942 |
+| Local only | +0.062 ± 0.023 | 3 of 3 |
+| FedAvg | +0.030 ± 0.005 | 3 of 3 |
+| Centralized | -0.013 ± 0.013 | 0 of 3 |
 
-- The ranking carries over to RAMMS. Scores drop by about 0.05, but the MuJoCo
-  test split is the tail of the same run the models trained on, while the RAMMS
-  run is entirely new, so part of the drop is not the simulator. Scoring on a
-  fresh MuJoCo run would separate the two.
-- Rangefinder readings are identical to standalone MuJoCo for the same pose, and
-  trajectories under identical commands differ by about 1 cm after 2 s.
+- The camera alone is about as good as the rangefinders once federated.
+- Adding it helps the models trained on less data (local-only and FedAvg) but
+  not centralized training, so with the camera FedAvg comes within 0.012 of
+  centralized.
+- Three seeds, and camera-only models vary a lot between seeds; treat the
+  sizes as provisional.
+- Getting clean frames needed two editor fixes: lights in the generated level
+  (it renders black otherwise) and turning off "Use Less CPU when in
+  Background", which throttles rendering. Rendering also needs a CPU that is
+  not saturated by training.
 
 ## Limits
 
@@ -211,7 +247,8 @@ MuJoCo for experiment 3 (seed 0) were then scored on this RAMMS data.
 
 ## Next
 
-- Train and federate on RAMMS data, then add camera input and crowds.
+- Crowds in RAMMS: pedestrians exist only as Unreal actors, so they need
+  mirroring into MuJoCo as moving bodies before rovers can see or hit them.
 - Look rover by rover at where the shared model hurts before trying heavier
   personalization (fewer fine-tuning epochs, shared body with per-rover heads,
   clustering rovers by speed).

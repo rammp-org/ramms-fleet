@@ -17,8 +17,9 @@ and the shared task is predicting their own collisions.
 | Federated training with a process per rover, baselines, seed sweeps | done | #2 |
 | Rovers with different speeds and sensor noise, fine-tuning, videos | done | #3 |
 | Distance-based collision labels | done | #4 |
-| RAMMS backend over the URLab bridge | started: collection works | #5 |
-| Cameras and crowds in RAMMS | next | |
+| RAMMS backend over the URLab bridge, federated training on RAMMS data | done | #5 |
+| Front camera as a model input | done | #6 |
+| Crowds in RAMMS | next | |
 
 Headline results (details and every table in [docs/results.md](docs/results.md)):
 
@@ -31,6 +32,8 @@ Headline results (details and every table in [docs/results.md](docs/results.md))
 - Slow rovers, which collide rarely and so have few examples, gain the most
   from federation.
 - FedProx and per-rover fine-tuning never beat plain FedAvg beyond seed noise.
+- Results hold inside RAMMS, models move between MuJoCo and RAMMS with almost
+  no loss, and adding the front camera raises FedAvg by +0.03 (3 of 3 seeds).
 
 ## Install
 
@@ -148,6 +151,10 @@ wherever data is loaded (`--label`):
 ### Model and training
 
 `learning.py` holds everything shared by baselines, clients, and evaluation.
+`--inputs` picks what a model sees: `features` (default), `camera`, or `both`.
+Camera models add a small CNN over the latest frame, average-pooled to 32 x 24,
+fused with the feature MLP for `both`. When a dataset has frames, samples with a
+stale frame are dropped for every input choice, so comparisons share samples.
 A sample stacks the last 4 control steps of features (68 inputs) into an MLP
 (68 -> 64 -> 64 -> 1). Features are scaled by fixed physical limits rather than
 dataset statistics, so no client needs another client's data to normalize.
@@ -227,6 +234,11 @@ What to know:
   which does not zero velocities: a single tipped rover is reset with its last
   velocity.
 - URLab binds its bridge and camera ports on all network interfaces.
+- `--camera` also records each rover's front camera, rendered in sync with the
+  step (64 x 48 grayscale, `images` and `image_age` arrays). This needs lights
+  in the level (the backend adds two), the editor's "Use Less CPU when in
+  Background" preference off, and a CPU not saturated by training; collection
+  then runs at about 0.4x real time.
 - `RAMMS_BRIDGE=tcp://127.0.0.1:5559 pytest tests/test_ramms_backend.py` runs the
   integration tests against a live editor; they are skipped otherwise.
 
@@ -249,10 +261,10 @@ drawn from the true geometry.
 
 | Command | Purpose | Key options |
 |---|---|---|
-| `ramms-fleet-collect` | simulate a fleet and write per-rover datasets | `--rovers`, `--seconds`, `--clutter-min/max`, `--speed`, `--range/accel/gyro-noise`, `--avoid-gain`, `--seed`, `--backend mujoco\|ramms` |
+| `ramms-fleet-collect` | simulate a fleet and write per-rover datasets | `--rovers`, `--seconds`, `--clutter-min/max`, `--speed`, `--range/accel/gyro-noise`, `--avoid-gain`, `--seed`, `--backend mujoco\|ramms`, `--camera` |
 | `ramms-fleet-view` | watch the fleet in the MuJoCo viewer | `--rovers`, `--clutter-min/max`, `--speed` (playback rate, not rover speed) |
-| `ramms-fleet-baseline` | train local-only and centralized models | `--epochs`, `--label`, `--horizon-m`, `--seed` |
-| `ramms-fleet-federate` | run Flower with a process per rover | `--rounds`, `--local-epochs`, `--proximal-mu`, `--evaluate-every`, `--name`, `--label`, `--port-base` |
+| `ramms-fleet-baseline` | train local-only and centralized models | `--epochs`, `--label`, `--horizon-m`, `--inputs`, `--seed` |
+| `ramms-fleet-federate` | run Flower with a process per rover | `--rounds`, `--local-epochs`, `--proximal-mu`, `--evaluate-every`, `--name`, `--label`, `--inputs`, `--port-base` |
 | `ramms-fleet-eval` | score every model on every rover | `--finetune-epochs`, `--label`, `--horizon-m` |
 | `ramms-fleet-sweep` | repeat collect, baselines, federated runs, and eval over seeds | `--seeds`, `--jobs`, `--proximal-mus` (none for FedAvg only), profile and label options, `--summarize-only` |
 | `ramms-fleet-compare` | markdown tables across finished sweeps | `NAME=RESULTS_DIR ...`, `--out` |
@@ -269,6 +281,8 @@ Scripts that reproduce the recorded experiments:
 |---|---|---|
 | `scripts/overnight_heterogeneity.sh` | clutter, speed, noise, combined, and 16-rover conditions; videos | about 4 h |
 | `scripts/distance_labels.sh` | the same datasets relabeled by distance | about 100 min |
+| `scripts/ramms_federated.sh` | collection in RAMMS, federated training, cross-simulator scoring | about 1 h |
+| `scripts/ramms_camera.sh` | camera collection in RAMMS, features vs camera vs both | about 4 h |
 
 The earlier sweeps are single `ramms-fleet-sweep` commands, listed with their
 results in [docs/results.md](docs/results.md).

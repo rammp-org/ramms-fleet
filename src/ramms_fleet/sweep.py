@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import subprocess
 import sys
 import time
@@ -23,13 +24,18 @@ import numpy as np
 BIN = Path(sys.executable).parent
 
 
+THREADS_PER_JOB = "1"
+
+
 def _run(step: str, command: list[str], log: Path, done: Path) -> None:
     if done.exists():
         print(f"  skip {step} (done)", flush=True)
         return
     started = time.monotonic()
+    # Seeds run in parallel; without a cap every PyTorch process would use every core.
+    env = dict(os.environ, OMP_NUM_THREADS=THREADS_PER_JOB)
     with open(log, "w") as f:
-        result = subprocess.run([str(c) for c in command], stdout=f, stderr=subprocess.STDOUT)
+        result = subprocess.run([str(c) for c in command], stdout=f, stderr=subprocess.STDOUT, env=env)
     if result.returncode != 0 or not done.exists():
         raise RuntimeError(f"{step} failed (exit {result.returncode}); see {log}")
     print(f"  {step} done in {time.monotonic() - started:.0f}s", flush=True)
@@ -83,6 +89,8 @@ def run_seed(seed: int, args: argparse.Namespace) -> Path:
             args.label,
             "--horizon-m",
             args.horizon_m,
+            "--inputs",
+            args.inputs,
         ],
         logs / "baseline.log",
         results / "centralized" / "model.pt",
@@ -114,6 +122,8 @@ def run_seed(seed: int, args: argparse.Namespace) -> Path:
                 args.label,
                 "--horizon-m",
                 args.horizon_m,
+                "--inputs",
+                args.inputs,
             ],
             logs / f"{name}.log",
             results / name / "model.pt",
@@ -279,6 +289,7 @@ def main(argv: list[str] | None = None) -> None:
         "--proximal-mus", type=float, nargs="*", default=[0.1], help="one FedProx run per value; none for FedAvg only"
     )
     parser.add_argument("--label", choices=("time", "distance"), default="time")
+    parser.add_argument("--inputs", choices=("features", "camera", "both"), default="features")
     parser.add_argument("--horizon-m", type=float, default=0.15, help="travel horizon for --label distance")
     parser.add_argument("--evaluate-every", type=int, default=5)
     parser.add_argument("--jobs", type=int, default=2, help="seeds to run at the same time")
@@ -295,6 +306,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--summarize-only", action="store_true")
     args = parser.parse_args(argv)
     args.data_root, args.out = args.data_root.resolve(), args.out.resolve()
+    global THREADS_PER_JOB
+    THREADS_PER_JOB = str(max(1, (os.cpu_count() or 1) // max(1, args.jobs)))
 
     if not args.summarize_only:
         started = time.monotonic()

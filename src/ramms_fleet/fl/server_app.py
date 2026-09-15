@@ -51,7 +51,8 @@ def main(grid: Grid, context: Context) -> None:
     input_dim = history * len(FEATURES)
     results_dir = Path(str(cfg["results-dir"]))
 
-    model = initial_model(input_dim, hidden, int(cfg["seed"]))
+    inputs = str(cfg["inputs"])
+    model = initial_model(input_dim, hidden, int(cfg["seed"]), inputs)
     num_rounds = int(cfg["num-server-rounds"])
     strategy = PeriodicEvalFedAvg(
         evaluate_every=int(cfg["evaluate-every"]),
@@ -70,7 +71,7 @@ def main(grid: Grid, context: Context) -> None:
     )
 
     model.load_state_dict(result.arrays.to_torch_state_dict())
-    save_model(results_dir / "model.pt", model, input_dim, hidden, history)
+    save_model(results_dir / "model.pt", model, input_dim, hidden, history, inputs)
     rounds = {
         str(r): {
             "train": dict(result.train_metrics_clientapp.get(r, {})),

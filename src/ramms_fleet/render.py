@@ -145,9 +145,11 @@ def _cell_label_positions(fleet: MujocoFleet, cam: mujoco.MjvCamera, width: int,
     return out
 
 
-def _describe(meta_row: dict) -> str:
+def _describe(meta_row: dict, crowd: bool = False) -> str:
     speed, noise = meta_row.get("cruise_speed", 0.3), meta_row.get("range_noise", 0.0)
-    return f"rover {meta_row['rover']}  clutter {meta_row['clutter']:.2f}\n{speed:.2f} m/s, noise {noise:.2f} m"
+    peds = meta_row.get("pedestrians", 0)
+    second = f"{peds or 'no'} pedestrian{'s' * (peds != 1)}" if crowd else f"{speed:.2f} m/s, noise {noise:.2f} m"
+    return f"rover {meta_row['rover']}  clutter {meta_row['clutter']:.2f}\n{second}"
 
 
 def _label(draw: ImageDraw.ImageDraw, xy: tuple[int, int], text: str, font: ImageFont.ImageFont) -> None:
@@ -166,6 +168,7 @@ def render_overview(args: argparse.Namespace) -> Path:
     cam = _camera(fleet, cells, width / height)
     labels = _cell_label_positions(fleet, cam, width, height, cells)
     font, title_font = _font(max(11, height // 55)), _font(max(16, height // 34))
+    crowd = any(r.get("pedestrians", 0) for r in rows)
 
     opt = mujoco.MjvOption()
     opt.flags[mujoco.mjtVisFlag.mjVIS_RANGEFINDER] = True
@@ -178,7 +181,7 @@ def render_overview(args: argparse.Namespace) -> Path:
             image = Image.fromarray(renderer.render())
             draw = ImageDraw.Draw(image, "RGBA")
             for i, xy in labels.items():
-                _label(draw, xy, _describe(rows[i]), font)
+                _label(draw, xy, _describe(rows[i], crowd), font)
             caption = f"{args.title or name}: blue = predicted safe, red = collision predicted within 0.5 s"
             draw.text((12, height - title_font.size - 12), caption, font=title_font, fill=(255, 255, 255),
                       stroke_width=2, stroke_fill=(0, 0, 0))  # fmt: skip

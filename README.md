@@ -19,7 +19,7 @@ and the shared task is predicting their own collisions.
 | Distance-based collision labels | done | #4 |
 | RAMMS backend over the URLab bridge, federated training on RAMMS data | done | #5 |
 | Front camera as a model input | done | #6 |
-| Crowds in RAMMS | next | |
+| Pedestrians in both backends | running | #7 |
 
 Headline results (details and every table in [docs/results.md](docs/results.md)):
 
@@ -123,6 +123,28 @@ noise order covers all sensors, so a noisy rover is noisy on every sensor.
 Noise corrupts what the rover observes (and so how it drives and what it
 records); the bumper and pose stay exact. With the defaults, collection
 reproduces earlier datasets bit for bit.
+
+### Pedestrians
+
+`--pedestrians MIN MAX` puts scripted pedestrians in each arena, with counts
+spread over the fleet in a seeded shuffle (independent of clutter). A
+pedestrian is an upright capsule (0.07 m radius, 0.45 m tall) on two slide
+joints with a velocity actuator per axis. `crowd.py` walks each one between
+random goals at its own speed (0.15 to 0.35 m/s), pauses at each goal, and
+steers around walls, obstacles, and other pedestrians. Half of them also steer
+around the rover; the rest walk as if it were not there.
+
+The walking model only chooses velocities, and both backends apply them as
+actuator commands, so pedestrians push and get pushed like any other body and
+every rangefinder and camera sees them. Positions come back as
+`FleetObs.pedestrians` and are saved per rover; a collision counts as involving
+a pedestrian when one is within 0.25 m of the rover's centre
+(`pedestrian_collisions_per_min` in `meta.json`).
+
+These are not RAMMS's own crowd agents. RammsCrowd pedestrians are Unreal Mass
+entities with no interface for reading their positions from outside the
+editor, and they would only exist in RAMMS; scripted pedestrians behave the
+same in both simulators and repeat exactly with the seed.
 
 ### Datasets and labels
 
@@ -261,12 +283,12 @@ drawn from the true geometry.
 
 | Command | Purpose | Key options |
 |---|---|---|
-| `ramms-fleet-collect` | simulate a fleet and write per-rover datasets | `--rovers`, `--seconds`, `--clutter-min/max`, `--speed`, `--range/accel/gyro-noise`, `--avoid-gain`, `--seed`, `--backend mujoco\|ramms`, `--camera` |
-| `ramms-fleet-view` | watch the fleet in the MuJoCo viewer | `--rovers`, `--clutter-min/max`, `--speed` (playback rate, not rover speed) |
+| `ramms-fleet-collect` | simulate a fleet and write per-rover datasets | `--rovers`, `--seconds`, `--clutter-min/max`, `--speed`, `--range/accel/gyro-noise`, `--pedestrians`, `--avoid-gain`, `--seed`, `--backend mujoco\|ramms`, `--camera` |
+| `ramms-fleet-view` | watch the fleet in the MuJoCo viewer | `--rovers`, `--clutter-min/max`, `--pedestrians`, `--speed` (playback rate, not rover speed) |
 | `ramms-fleet-baseline` | train local-only and centralized models | `--epochs`, `--label`, `--horizon-m`, `--inputs`, `--seed` |
 | `ramms-fleet-federate` | run Flower with a process per rover | `--rounds`, `--local-epochs`, `--proximal-mu`, `--evaluate-every`, `--name`, `--label`, `--inputs`, `--port-base` |
 | `ramms-fleet-eval` | score every model on every rover | `--finetune-epochs`, `--label`, `--horizon-m` |
-| `ramms-fleet-sweep` | repeat collect, baselines, federated runs, and eval over seeds | `--seeds`, `--jobs`, `--proximal-mus` (none for FedAvg only), profile and label options, `--summarize-only` |
+| `ramms-fleet-sweep` | repeat collect, baselines, federated runs, and eval over seeds | `--seeds`, `--jobs`, `--proximal-mus` (none for FedAvg only), profile, pedestrian, and label options, `--summarize-only` |
 | `ramms-fleet-compare` | markdown tables across finished sweeps | `NAME=RESULTS_DIR ...`, `--out` |
 | `ramms-fleet-render` | overview and side-by-side videos | `overview --model`, `compare --rover --models` |
 
@@ -283,6 +305,7 @@ Scripts that reproduce the recorded experiments:
 | `scripts/distance_labels.sh` | the same datasets relabeled by distance | about 100 min |
 | `scripts/ramms_federated.sh` | collection in RAMMS, federated training, cross-simulator scoring | about 1 h |
 | `scripts/ramms_camera.sh` | camera collection in RAMMS, features vs camera vs both | about 4 h |
+| `scripts/crowds.sh` | pedestrians: RAMMS camera runs (features, camera, both) and a MuJoCo sweep | about 6 h |
 
 The earlier sweeps are single `ramms-fleet-sweep` commands, listed with their
 results in [docs/results.md](docs/results.md).
@@ -293,7 +316,8 @@ results in [docs/results.md](docs/results.md).
 src/ramms_fleet/
   assets/rover.xml   rover MJCF
   spec.py            rover, policy, profile, and feature constants (no MuJoCo import)
-  world.py           arena cells, obstacles, and rover placement
+  world.py           arena cells, obstacles, pedestrian bodies, and rover placement
+  crowd.py           pedestrian walking model (no MuJoCo import)
   fleet.py           MujocoFleet: stepping, sensor noise, observations
   policy.py          exploration policy
   collect.py         ramms-fleet-collect

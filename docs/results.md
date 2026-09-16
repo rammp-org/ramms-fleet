@@ -22,6 +22,7 @@ Compute was one 8-thread CPU.
 | 7 | Does the front camera help? | yes for local-only and FedAvg (+0.03 to +0.06), not centralized |
 | 8 | What do pedestrians change? | every score drops; federation matters more in MuJoCo; in RAMMS the camera stops helping |
 | 9 | Does the camera model need to see motion? | no: a window of frames matches a single frame everywhere |
+| 10 | Does the prediction make the fleet safer? | yes: collisions roughly halve, and the shared model beats local-only per metre |
 
 ## 1. First run
 
@@ -350,6 +351,64 @@ Arenas without pedestrians, the experiment 7 data (3 seeds):
   latest, which drops 24 more samples per dataset out of about 100,000.
   Earlier single-frame runs used the looser rule.
 
+## 10. Letting the model drive
+
+Every experiment above scores a model that never touches the robot. Here each
+rover runs its own model on board: at each control step it forms the command
+the exploration policy wants, scores it, and above a risk threshold keeps 25%
+of its speed and turns away from the nearer side. Recovery after a bump is left
+alone, and arenas, sensors, noise, and the policy are unchanged, so the model is
+the only difference. Standing still would be trivially safe, so runs report
+distance covered as well (`scripts/guard.sh`, 5 seeds x 8 rovers x 600 s,
+about 20 min).
+
+Clutter-only arenas with the experiment 3 models, threshold 0.5:
+
+| Guard | Collisions/min | Collisions/100 m | Metres/min | Steps guarded |
+|---|---:|---:|---:|---:|
+| None | 11.8 ± 1.0 | 95.0 ± 9.2 | 12.5 ± 0.2 | 0% |
+| Local only | 6.3 ± 2.7 | 53.2 ± 25.5 | 12.1 ± 0.7 | 15% |
+| FedAvg | 5.8 ± 2.2 | 49.2 ± 21.8 | 12.1 ± 0.7 | 15% |
+| Centralized | 5.1 ± 2.8 | 42.7 ± 26.8 | 12.3 ± 0.9 | 17% |
+
+Arenas with pedestrians and the experiment 8 models. The threshold matters more
+than the model, so it was swept for FedAvg first:
+
+| FedAvg threshold | Collisions/min | Collisions/100 m | Metres/min | Steps guarded |
+|---|---:|---:|---:|---:|
+| No guard | 16.9 ± 1.2 | 142.6 ± 10.9 | 11.8 ± 0.1 | 0% |
+| 0.7 | 12.6 ± 2.9 | 107.5 ± 27.8 | 11.8 ± 0.4 | 14% |
+| 0.5 | 11.4 ± 2.1 | 98.2 ± 20.8 | 11.7 ± 0.4 | 17% |
+| 0.3 | 8.2 ± 1.7 | 72.4 ± 16.7 | 11.4 ± 0.5 | 23% |
+| 0.15 | 7.9 ± 1.8 | 80.4 ± 15.4 | 9.8 ± 1.1 | 38% |
+
+At threshold 0.3, the best of those:
+
+| Guard | Collisions/min | Collisions/100 m | Metres/min | Steps guarded |
+|---|---:|---:|---:|---:|
+| None | 16.9 ± 1.2 | 142.6 ± 10.9 | 11.8 ± 0.1 | 0% |
+| Local only | 9.2 ± 1.5 | 84.9 ± 16.9 | 11.0 ± 0.4 | 25% |
+| FedAvg | 8.2 ± 1.7 | 72.4 ± 16.7 | 11.4 ± 0.5 | 23% |
+| Centralized | 7.9 ± 1.7 | 78.3 ± 18.3 | 10.2 ± 0.6 | 35% |
+
+- Prediction pays off in behaviour, not only in AUPRC: collisions per 100 m
+  roughly halve, in 5 of 5 seeds in both arena sets, while distance per minute
+  falls by 3 to 6%.
+- The shared model beats local-only per metre in arenas with pedestrians at
+  threshold 0.3: 72.4 against 84.9 per 100 m, better in 5 of 5 seeds. In
+  clutter-only arenas at threshold 0.5 the same comparison is 49.2 against
+  53.2, but only 2 of 5 seeds, so that one is noise.
+- Centralized and FedAvg end up close, and which wins depends on the metric:
+  centralized has fewer collisions per minute (7.9 against 8.2) because it
+  guards 35% of steps against 23%, but is worse per metre travelled.
+- A model that triggers more often looks safer per minute while covering less
+  ground. Collisions per 100 m is the fair comparison, and comparing models at
+  one threshold still mixes ranking quality with how calibrated the scores are.
+- The most cautious setting (0.15) is the first that costs real progress: 17%
+  less distance for no gain per metre.
+- A control run with the guard disabled by threshold reproduces the unguarded
+  numbers exactly, so the harness itself changes nothing.
+
 ## Limits
 
 - One narrow task that rangefinders make fairly easy, and one exploration
@@ -362,6 +421,9 @@ Arenas without pedestrians, the experiment 7 data (3 seeds):
 - Pedestrians are scripted capsules with a simple steering rule.
 - Three RAMMS seeds cannot resolve differences smaller than about 0.05 AUPRC,
   which is most of what the camera does or does not add.
+- The guard is one fixed rule (brake and turn) at one threshold per run, and
+  the models were not calibrated, so guard results compare policies, not
+  predictors alone.
 
 ## Next
 
@@ -375,3 +437,7 @@ Arenas without pedestrians, the experiment 7 data (3 seeds):
   clustering rovers by speed).
 - Partial participation and dropped rounds, closer to real robots on flaky
   Wi-Fi.
+- Robustness to a broken rover (dead rangefinder, stuck bumper, flipped
+  labels) and aggregation that resists it.
+- Calibrate scores per rover, or tune the threshold per model, so guard runs
+  compare predictors rather than caution levels.

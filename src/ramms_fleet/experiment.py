@@ -24,7 +24,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from ramms_fleet.learning import INPUTS, LABELS, RoverData, evaluate, load_rover, make_model, train
+from ramms_fleet.learning import FEATURE_SCALE, INPUTS, LABELS, RoverData, evaluate, load_rover, make_model, train
 
 
 def rover_files(data_dir: Path) -> list[Path]:
@@ -65,6 +65,27 @@ def initial_model(
     """Every method starts from the same weights for a given seed."""
     torch.manual_seed(seed)
     return make_model(input_dim, hidden, inputs, history)
+
+
+class RiskModel:
+    """Scores each rover's last `history` steps of scaled features."""
+
+    def __init__(self, path: Path, num_rovers: int):
+        self.model, self.history, inputs = load_model(path)
+        if inputs != "features":
+            raise ValueError(f"{path} uses inputs={inputs!r}; driving and videos need feature-only models")
+        self.model.eval()
+        self.window = np.zeros((num_rovers, self.history, len(FEATURE_SCALE)), dtype=np.float32)
+
+    def reset(self, rovers: np.ndarray) -> None:
+        self.window[rovers] = 0
+
+    @torch.no_grad()
+    def __call__(self, features: np.ndarray) -> np.ndarray:
+        self.window = np.roll(self.window, -1, axis=1)
+        self.window[:, -1] = features / FEATURE_SCALE
+        logits = self.model(torch.from_numpy(self.window.reshape(len(features), -1)))
+        return torch.sigmoid(logits.squeeze(1)).numpy()
 
 
 def run_baselines(

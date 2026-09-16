@@ -144,9 +144,10 @@ local epochs, FedProx μ = 0.01 and 0.1 (about 4 h, `scripts/overnight_heterogen
 - Speed differences open the widest gap to centralized training (0.034 against
   0.018 with clutter alone). Experiment 5 shows most of that came from the
   time-based label.
-- Slow rovers gain the most. The slowest third collides 7.6 times per minute
-  against 17.6 for the fastest third, so their own data has few positives:
-  local-only 0.469, FedAvg 0.620, centralized 0.609 (all three differences).
+- Slow rovers gain the most. Grouped into thirds by cruise speed, the slowest
+  rovers (0.15 to 0.21 m/s) collide 6.0 times per minute against 17.2 for the
+  fastest (0.47 to 0.60 m/s), so their own data holds few positives (4.4%
+  against 18.7%): local-only 0.469, FedAvg 0.620, centralized 0.609.
 - Fine-tuning lowers mean AUPRC in every condition. It helps fast rovers
   slightly but overfits the few positives of slow ones.
 - FedProx never beats FedAvg beyond seed noise.
@@ -344,9 +345,10 @@ Arenas without pedestrians, the experiment 7 data (3 seeds):
 - So the explanation offered in experiment 8, that camera models cannot see
   movement, is wrong. What the camera adds with pedestrians is below what 3
   seeds with spreads of ±0.03 to ±0.08 can resolve.
-- Frame history hurts centralized training in both datasets (-0.047 and
-  -0.058), the case with the most data and the most parameters to fit; four
-  channels quadruple the first convolution's inputs.
+- Frame history hurts centralized training: with features and camera, moving
+  from one frame to four costs it 0.034 with pedestrians and 0.045 without.
+  That is the case with the most data to fit, and four channels quadruple the
+  first convolution's inputs.
 - Samples now require every frame of the window to be fresh, not only the
   latest, which drops 24 more samples per dataset out of about 100,000.
   Earlier single-frame runs used the looser rule.

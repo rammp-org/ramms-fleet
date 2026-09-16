@@ -25,7 +25,7 @@ and the shared task is predicting their own collisions.
 
 Headline results (details and every table in [docs/results.md](docs/results.md)):
 
-- FedAvg beats each rover training alone in 61 of 62 seeds across every
+- FedAvg beats each rover training alone in 82 of 85 seeds across every
   experiment, by about +0.03 to +0.10 AUPRC.
 - It closes most of the gap to pooling all rovers' data: 0.890 against 0.907
   for centralized training, with local-only at 0.821 (5 seeds).
@@ -78,6 +78,10 @@ One experiment, end to end:
 
 # 5. Score every model on every rover's held-out data
 .venv/bin/ramms-fleet-eval --data data/run0 --results results/run0 --finetune-epochs 5
+
+# 6. Put a model in the loop: it brakes and turns the rover, and collisions are counted
+.venv/bin/ramms-fleet-guard --rovers 8 --seconds 600 --model results/run0/fedavg/model.pt \
+    --threshold 0.3 --out results/run0/guard/fedavg.json
 ```
 
 Keep training budgets equal when comparing: baselines train `--epochs`, and a
@@ -163,7 +167,7 @@ it:
 
 | Array | Shape | Meaning |
 |-------|-------|---------|
-| `features` | (T, 17) | 5 ranges, accel, gyro, 2 wheel velocities, commanded v and w (names in `meta.json`) |
+| `features` | (T, 15) | 5 ranges, accel, gyro, 2 wheel velocities, commanded v and w (names in `meta.json`) |
 | `label` | (T,) | time label: a new bumper contact within the next `--horizon` seconds (default 0.5) |
 | `valid` | (T,) | cruising and not in contact; train and evaluate on these samples |
 | `bump` | (T,) | bumper in contact |
@@ -185,16 +189,35 @@ wherever data is loaded (`--label`):
 `--inputs` picks what a model sees: `features` (default), `camera`, or `both`,
 and `camera-history` or `both-history` for the whole window of frames stacked
 as channels rather than the latest frame alone.
-Camera models add a small CNN over the latest frame, average-pooled to 32 x 24,
-fused with the feature MLP for `both`. When a dataset has frames, samples with a
+Camera models add a small CNN over the frames, average-pooled to 32 x 24 and
+stacked as channels for the `-history` choices, fused with the feature MLP for
+`both`. A model stores its inputs and history, so it rebuilds as saved. When a dataset has frames, samples with a
 stale frame are dropped for every input choice, so comparisons share samples.
-A sample stacks the last 4 control steps of features (68 inputs) into an MLP
-(68 -> 64 -> 64 -> 1). Features are scaled by fixed physical limits rather than
+A sample stacks the last 4 control steps of features (60 inputs) into an MLP
+(60 -> 64 -> 64 -> 1). Features are scaled by fixed physical limits rather than
 dataset statistics, so no client needs another client's data to normalize.
 Training uses Adam with the positive class re-weighted by each dataset's own
 negative-to-positive ratio; `--proximal-mu` adds the FedProx penalty. Each
 rover's final 20% of time is its test split, so test samples never sit next to
 training samples. Every method starts from the same initial weights for a seed.
+
+### Letting the model drive
+
+Every score above comes from a model that never touches the robot.
+`ramms-fleet-guard` puts one in the loop: each control step the rover forms the
+command the exploration policy wants, scores it with its own model (the scored
+features carry that intended command, exactly as during collection), and above
+`--threshold` keeps `--brake` of its speed and turns away from the nearer side
+at `--turn` of the maximum rate. The scripted recovery after a bump is left
+alone. `--model` takes `{rover}` to give each rover its own file, so local-only
+models can drive their own rover.
+
+Runs report collisions per minute, metres covered per minute, collisions per
+100 m, and the fraction of steps guarded. Distance matters: standing still
+would be perfectly safe, so compare per metre travelled.
+`ramms-fleet-guard-summary` averages a directory of runs into `summary.json`
+and markdown. How cautious the guard is matters more than which model drives
+it, so sweep `--threshold` before comparing models.
 
 ### Federated training
 

@@ -52,7 +52,7 @@ def main(grid: Grid, context: Context) -> None:
     results_dir = Path(str(cfg["results-dir"]))
 
     inputs = str(cfg["inputs"])
-    model = initial_model(input_dim, hidden, int(cfg["seed"]), inputs)
+    model = initial_model(input_dim, hidden, int(cfg["seed"]), inputs, history)
     num_rounds = int(cfg["num-server-rounds"])
     strategy = PeriodicEvalFedAvg(
         evaluate_every=int(cfg["evaluate-every"]),

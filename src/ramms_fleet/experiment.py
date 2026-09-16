@@ -54,15 +54,17 @@ def load_model(path: Path) -> tuple[torch.nn.Module, int, str]:
     """Returns the model, its feature history length, and its inputs."""
     saved = torch.load(path, weights_only=True)
     inputs = saved.get("inputs", "features")
-    model = make_model(saved["input_dim"], saved["hidden"], inputs)
+    model = make_model(saved["input_dim"], saved["hidden"], inputs, saved["history"])
     model.load_state_dict(saved["state_dict"])
     return model, saved["history"], inputs
 
 
-def initial_model(input_dim: int, hidden: int, seed: int, inputs: str = "features") -> torch.nn.Module:
+def initial_model(
+    input_dim: int, hidden: int, seed: int, inputs: str = "features", history: int = 4
+) -> torch.nn.Module:
     """Every method starts from the same weights for a given seed."""
     torch.manual_seed(seed)
-    return make_model(input_dim, hidden, inputs)
+    return make_model(input_dim, hidden, inputs, history)
 
 
 def run_baselines(
@@ -82,7 +84,7 @@ def run_baselines(
     input_dim = datasets[0].input_dim
 
     for f, data in zip(files, datasets, strict=True):
-        model = initial_model(input_dim, hidden, seed, inputs)
+        model = initial_model(input_dim, hidden, seed, inputs, history)
         loss = train(model, data.x_train, data.y_train, epochs=epochs, lr=lr, seed=seed, images=data.img_train)
         save_model(out_dir / "local" / f"{f.stem}.pt", model, input_dim, hidden, history, inputs)
         print(f"local {f.stem}: {len(data.x_train)} samples, final loss {loss:.4f}")
@@ -90,7 +92,7 @@ def run_baselines(
     x = np.concatenate([d.x_train for d in datasets])
     y = np.concatenate([d.y_train for d in datasets])
     images = None if inputs == "features" else np.concatenate([d.img_train for d in datasets])
-    model = initial_model(input_dim, hidden, seed, inputs)
+    model = initial_model(input_dim, hidden, seed, inputs, history)
     loss = train(model, x, y, epochs=epochs, lr=lr, seed=seed, images=images)
     save_model(out_dir / "centralized" / "model.pt", model, input_dim, hidden, history, inputs)
     print(f"centralized: {len(x)} samples, final loss {loss:.4f}")

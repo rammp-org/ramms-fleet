@@ -24,6 +24,7 @@ import time
 from pathlib import Path
 
 from ramms_fleet.experiment import rover_files
+from ramms_fleet.learning import INPUTS
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _PROGRESS = re.compile(r"\[ROUND \d+/\d+\]|aggregate_evaluate|Strategy execution finished|ERROR|Traceback|wrote ")
@@ -174,7 +175,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--evaluate-every", type=int, default=1, help="client evaluation interval in rounds")
     parser.add_argument("--label", choices=("time", "distance"), default="time")
     parser.add_argument("--horizon-m", type=float, default=0.15, help="travel horizon for --label distance")
-    parser.add_argument("--inputs", choices=("features", "camera", "both"), default="features")
+    parser.add_argument("--inputs", choices=INPUTS, default="features")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--port-base", type=int, default=9091, help="uses port-base .. port-base + 2 + rovers")
     run_federated(parser.parse_args(argv))

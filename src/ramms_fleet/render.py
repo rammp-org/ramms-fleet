@@ -24,12 +24,10 @@ os.environ.setdefault("MUJOCO_GL", "egl")
 import imageio.v2 as imageio  # noqa: E402
 import mujoco  # noqa: E402
 import numpy as np  # noqa: E402
-import torch  # noqa: E402
 from PIL import Image, ImageDraw, ImageFont  # noqa: E402
 
-from ramms_fleet.experiment import load_model  # noqa: E402
+from ramms_fleet.experiment import RiskModel  # noqa: E402
 from ramms_fleet.fleet import MujocoFleet  # noqa: E402
-from ramms_fleet.learning import FEATURE_SCALE  # noqa: E402
 from ramms_fleet.policy import WanderPolicy  # noqa: E402
 from ramms_fleet.spec import RoverProfile  # noqa: E402
 from ramms_fleet.world import ROVER_PREFIX, EnvConfig  # noqa: E402
@@ -61,27 +59,6 @@ def fleet_from_run(data_dir: Path, rovers: list[int] | None, seed: int) -> tuple
     ]
     fleet = MujocoFleet(configs, control_hz=meta["control_hz"], seed=seed, shared_world=True, profiles=profiles)
     return fleet, chosen
-
-
-class RiskModel:
-    """Scores each rover's last `history` steps of scaled features."""
-
-    def __init__(self, path: Path, num_rovers: int):
-        self.model, self.history, inputs = load_model(path)
-        if inputs != "features":
-            raise ValueError(f"{path} uses inputs={inputs!r}; videos support feature-only models")
-        self.model.eval()
-        self.window = np.zeros((num_rovers, self.history, len(FEATURE_SCALE)), dtype=np.float32)
-
-    def reset(self, rovers: np.ndarray) -> None:
-        self.window[rovers] = 0
-
-    @torch.no_grad()
-    def __call__(self, features: np.ndarray) -> np.ndarray:
-        self.window = np.roll(self.window, -1, axis=1)
-        self.window[:, -1] = features / FEATURE_SCALE
-        logits = self.model(torch.from_numpy(self.window.reshape(len(features), -1)))
-        return torch.sigmoid(logits.squeeze(1)).numpy()
 
 
 def _simulate(fleet: MujocoFleet, models: dict[str, list[RiskModel]], seconds: float, seed: int):

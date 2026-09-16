@@ -30,6 +30,8 @@ ramms-fleet-federate = "ramms_fleet.federate:main"
 ramms-fleet-sweep = "ramms_fleet.sweep:main"
 ramms-fleet-compare = "ramms_fleet.sweep:compare_main"
 ramms-fleet-render = "ramms_fleet.render:main"
+ramms-fleet-guard = "ramms_fleet.guard:main"
+ramms-fleet-guard-summary = "ramms_fleet.guard:summary_main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -74,6 +76,7 @@ extend-immutable-calls = [
   "ramms_fleet.spec.RoverParams",
   "ramms_fleet.spec.WanderParams",
   "ramms_fleet.crowd.CrowdParams",
+  "ramms_fleet.guard.GuardParams",
 ]
 
 [tool.pytest.ini_options]

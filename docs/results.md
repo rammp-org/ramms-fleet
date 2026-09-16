@@ -21,6 +21,7 @@ Compute was one 8-thread CPU.
 | 6 | Does it hold inside RAMMS? | yes, and models move between simulators with almost no loss |
 | 7 | Does the front camera help? | yes for local-only and FedAvg (+0.03 to +0.06), not centralized |
 | 8 | What do pedestrians change? | every score drops; federation matters more in MuJoCo; in RAMMS the camera stops helping |
+| 9 | Does the camera model need to see motion? | no: a window of frames matches a single frame everywhere |
 
 ## 1. First run
 
@@ -303,6 +304,52 @@ Pedestrians were involved in 31% of collisions.
   entities with no interface for reading their positions from outside the
   editor, and they would exist only in RAMMS.
 
+## 9. A window of camera frames
+
+Experiment 8 left an explanation to test: a camera model sees one frame, so it
+cannot see a pedestrian moving, while the features cover four steps.
+`--inputs camera-history` and `both-history` stack the whole feature window (4
+frames) as channels instead. Both RAMMS datasets were retrained, no new
+collection (`scripts/frame_history.sh`, about 2.5 h).
+
+Arenas with pedestrians (3 seeds):
+
+| Inputs | Local only | FedAvg | FedAvg + fine-tune | Centralized |
+|---|---:|---:|---:|---:|
+| Features | 0.743 ± 0.020 | 0.799 ± 0.052 | 0.789 ± 0.040 | 0.835 ± 0.040 |
+| Camera, 1 frame | 0.736 ± 0.046 | 0.772 ± 0.084 | 0.780 ± 0.064 | 0.756 ± 0.074 |
+| Camera, 4 frames | 0.732 ± 0.046 | 0.781 ± 0.079 | 0.773 ± 0.056 | 0.707 ± 0.089 |
+| Both, 1 frame | 0.744 ± 0.039 | 0.784 ± 0.084 | 0.788 ± 0.052 | 0.823 ± 0.059 |
+| Both, 4 frames | 0.742 ± 0.005 | 0.794 ± 0.072 | 0.775 ± 0.032 | 0.789 ± 0.041 |
+
+Arenas without pedestrians, the experiment 7 data (3 seeds):
+
+| Inputs | Local only | FedAvg | FedAvg + fine-tune | Centralized |
+|---|---:|---:|---:|---:|
+| Features | 0.740 ± 0.051 | 0.846 ± 0.055 | 0.822 ± 0.051 | 0.901 ± 0.029 |
+| Camera, 1 frame | 0.765 ± 0.069 | 0.839 ± 0.074 | 0.827 ± 0.051 | 0.812 ± 0.068 |
+| Camera, 4 frames | 0.736 ± 0.084 | 0.833 ± 0.044 | 0.810 ± 0.036 | 0.819 ± 0.085 |
+| Both, 1 frame | 0.802 ± 0.065 | 0.875 ± 0.053 | 0.848 ± 0.063 | 0.887 ± 0.028 |
+| Both, 4 frames | 0.773 ± 0.085 | 0.875 ± 0.045 | 0.839 ± 0.053 | 0.842 ± 0.088 |
+
+| Adding camera frames to the features, FedAvg (same seed) | 1 frame | 4 frames |
+|---|---:|---:|
+| Without pedestrians | +0.030 ± 0.005 (3 of 3) | +0.029 ± 0.012 (3 of 3) |
+| With pedestrians | -0.015 ± 0.032 (1 of 3) | -0.005 ± 0.015 (1 of 3) |
+
+- Frame history changes nothing that matters. Where the single frame helped it
+  still helps by the same amount, and where it did not, history does not
+  rescue it.
+- So the explanation offered in experiment 8, that camera models cannot see
+  movement, is wrong. What the camera adds with pedestrians is below what 3
+  seeds with spreads of ±0.03 to ±0.08 can resolve.
+- Frame history hurts centralized training in both datasets (-0.047 and
+  -0.058), the case with the most data and the most parameters to fit; four
+  channels quadruple the first convolution's inputs.
+- Samples now require every frame of the window to be fresh, not only the
+  latest, which drops 24 more samples per dataset out of about 100,000.
+  Earlier single-frame runs used the looser rule.
+
 ## Limits
 
 - One narrow task that rangefinders make fairly easy, and one exploration
@@ -312,16 +359,17 @@ Pedestrians were involved in 31% of collisions.
   permissions, and evaluation reads every rover's test split.
 - The label definition moves absolute scores and the size of the gaps; compare
   methods only within one label type.
-- Pedestrians are scripted capsules with a simple steering rule, and camera
-  models see a single frame, so they cannot see motion.
+- Pedestrians are scripted capsules with a simple steering rule.
+- Three RAMMS seeds cannot resolve differences smaller than about 0.05 AUPRC,
+  which is most of what the camera does or does not add.
 
 ## Next
 
 - RAMMS's own crowd: expose Mass agent positions from RammsCrowd so its
   animated pedestrians drive the physics bodies in place of the scripted
   walkers.
-- More federated rounds with pedestrians, and a short frame history for camera
-  models, with more RAMMS seeds.
+- More federated rounds with pedestrians, and more RAMMS seeds, before drawing
+  any further conclusion about the camera.
 - Look rover by rover at where the shared model hurts before trying heavier
   personalization (fewer fine-tuning epochs, shared body with per-rover heads,
   clustering rovers by speed).

@@ -20,6 +20,7 @@ and the shared task is predicting their own collisions.
 | RAMMS backend over the URLab bridge, federated training on RAMMS data | done | #5 |
 | Front camera as a model input | done | #6 |
 | Pedestrians in both backends | done | #7 |
+| Camera frame history | done | #8 |
 
 Headline results (details and every table in [docs/results.md](docs/results.md)):
 
@@ -36,7 +37,8 @@ Headline results (details and every table in [docs/results.md](docs/results.md))
   no loss, and adding the front camera raises FedAvg by +0.03 (3 of 3 seeds).
 - Pedestrians lower every score, and local-only most, so federation matters
   more: FedAvg's lead over local-only grows from +0.067 to +0.097 in MuJoCo. In
-  RAMMS the camera stops helping once pedestrians move (3 seeds).
+  RAMMS the camera stops helping once pedestrians move (3 seeds). Giving the
+  camera model the whole window of frames changes neither result.
 
 ## Install
 
@@ -176,7 +178,9 @@ wherever data is loaded (`--label`):
 ### Model and training
 
 `learning.py` holds everything shared by baselines, clients, and evaluation.
-`--inputs` picks what a model sees: `features` (default), `camera`, or `both`.
+`--inputs` picks what a model sees: `features` (default), `camera`, or `both`,
+and `camera-history` or `both-history` for the whole window of frames stacked
+as channels rather than the latest frame alone.
 Camera models add a small CNN over the latest frame, average-pooled to 32 x 24,
 fused with the feature MLP for `both`. When a dataset has frames, samples with a
 stale frame are dropped for every input choice, so comparisons share samples.
@@ -309,6 +313,7 @@ Scripts that reproduce the recorded experiments:
 | `scripts/ramms_federated.sh` | collection in RAMMS, federated training, cross-simulator scoring | about 1 h |
 | `scripts/ramms_camera.sh` | camera collection in RAMMS, features vs camera vs both | about 4 h |
 | `scripts/crowds.sh` | pedestrians: RAMMS camera runs (features, camera, both) and a MuJoCo sweep | about 2.5 h |
+| `scripts/frame_history.sh` | the same RAMMS data with a window of camera frames | about 2.5 h |
 
 The earlier sweeps are single `ramms-fleet-sweep` commands, listed with their
 results in [docs/results.md](docs/results.md).

@@ -36,7 +36,7 @@ class RoverData:
     x_test: np.ndarray
     y_test: np.ndarray
     img_train: np.ndarray | None = None
-    """(N, 1, H, W) camera frames in [0, 1] when the model uses the camera."""
+    """(N, C, H, W) camera frames in [0, 1] when the model uses the camera, oldest frame first."""
     img_test: np.ndarray | None = None
 
     @property
@@ -45,10 +45,18 @@ class RoverData:
 
 
 LABELS = ("time", "distance")
-INPUTS = ("features", "camera", "both")
+INPUTS = ("features", "camera", "both", "camera-history", "both-history")
+"""What the model sees. The "-history" choices stack the same window of frames the features cover."""
 # Camera frames are average-pooled by this factor on load (64x48 recorded, 32x24 to the
 # model), which keeps CNN training on the CPU fast.
 CAMERA_DOWNSAMPLE = 2
+
+
+def camera_frames(inputs: str, history: int) -> int:
+    """How many camera frames the model stacks: the feature window, or just the latest frame."""
+    if inputs == "features":
+        return 0
+    return history if inputs.endswith("-history") else 1
 
 
 def load_rover(
@@ -71,10 +79,12 @@ def load_rover(
     run's time horizon); `label="distance"` relabels from the recorded poses:
     collision within `horizon_m` metres of travel.
 
-    `inputs` picks what the model sees: the feature window, the latest camera
-    frame, or both. When the file has camera frames, samples whose frame is
-    older than `max_image_age` seconds are dropped for every choice of inputs,
-    so models with and without the camera are scored on the same samples.
+    `inputs` picks what the model sees: the feature window, camera frames, or
+    both. The "-history" choices stack every frame of the window as a channel,
+    so the model can see movement; the others use the latest frame only. When
+    the file has camera frames, samples with a frame in the window older than
+    `max_image_age` seconds are dropped for every choice of inputs, so all
+    models are scored on the same samples.
     """
     if inputs not in INPUTS:
         raise ValueError(f"inputs must be one of {INPUTS}, not {inputs!r}")
@@ -94,7 +104,9 @@ def load_rover(
     keep = valid[ends] & same_episode
     has_images = "images" in data.files
     if has_images:
-        keep &= data["image_age"][ends] <= max_image_age
+        age = data["image_age"]
+        for k in range(history):
+            keep &= age[ends - k] <= max_image_age
     elif inputs != "features":
         raise ValueError(f"{path} has no camera frames; collect with --camera to use inputs={inputs!r}")
     ends = ends[keep]
@@ -104,13 +116,15 @@ def load_rover(
 
     split = ends < round(steps * (1 - test_fraction))
     img = None
-    if inputs != "features":
-        frames = data["images"][ends].astype(np.float32) / 255.0
+    channels = camera_frames(inputs, history)
+    if channels:
+        stack = np.stack([data["images"][ends - k] for k in range(channels - 1, -1, -1)], axis=1)
+        frames = stack.astype(np.float32) / 255.0
         k = CAMERA_DOWNSAMPLE
         if k > 1:
-            n, h, w = frames.shape
-            frames = frames[:, : h - h % k, : w - w % k].reshape(n, h // k, k, w // k, k).mean(axis=(2, 4))
-        img = frames[:, None, :, :]
+            n, c, h, w = frames.shape
+            frames = frames[:, :, : h - h % k, : w - w % k].reshape(n, c, h // k, k, w // k, k).mean(axis=(3, 5))
+        img = frames
     return RoverData(
         x_train=x[split],
         y_train=y[split],
@@ -124,11 +138,11 @@ def load_rover(
 class CollisionNet(nn.Module):
     """Collision predictor that can see the camera: a small CNN, optionally fused with the feature MLP."""
 
-    def __init__(self, input_dim: int, hidden: int = 64, inputs: str = "both"):
+    def __init__(self, input_dim: int, hidden: int = 64, inputs: str = "both", frames: int = 1):
         super().__init__()
         self.inputs = inputs
         self.cnn = nn.Sequential(
-            nn.Conv2d(1, 8, 5, stride=2, padding=2),
+            nn.Conv2d(frames, 8, 5, stride=2, padding=2),
             nn.ReLU(),
             nn.Conv2d(8, 16, 3, stride=2, padding=1),
             nn.ReLU(),
@@ -141,7 +155,7 @@ class CollisionNet(nn.Module):
         )
         self.mlp = (
             nn.Sequential(nn.Linear(input_dim, hidden), nn.ReLU(), nn.Linear(hidden, hidden), nn.ReLU())
-            if inputs == "both"
+            if inputs.startswith("both")
             else None
         )
         width = hidden * (2 if self.mlp is not None else 1)
@@ -159,9 +173,9 @@ def forward(model: nn.Module, x: torch.Tensor, img: torch.Tensor | None) -> torc
     return model(x, img) if isinstance(model, CollisionNet) else model(x)
 
 
-def make_model(input_dim: int, hidden: int = 64, inputs: str = "features") -> nn.Module:
+def make_model(input_dim: int, hidden: int = 64, inputs: str = "features", history: int = 4) -> nn.Module:
     if inputs != "features":
-        return CollisionNet(input_dim, hidden, inputs)
+        return CollisionNet(input_dim, hidden, inputs, camera_frames(inputs, history))
     return nn.Sequential(
         nn.Linear(input_dim, hidden),
         nn.ReLU(),

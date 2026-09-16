@@ -27,7 +27,7 @@ def _setup(msg: Message, context: Context):
         horizon_m=float(cfg["horizon-m"]),
         inputs=str(cfg["inputs"]),
     )
-    model = make_model(data.input_dim, int(cfg["hidden"]), str(cfg["inputs"]))
+    model = make_model(data.input_dim, int(cfg["hidden"]), str(cfg["inputs"]), int(cfg["history"]))
     model.load_state_dict(msg.content["arrays"].to_torch_state_dict())
     return cfg, data, model
 

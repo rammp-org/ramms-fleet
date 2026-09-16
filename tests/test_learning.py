@@ -118,3 +118,68 @@ def test_camera_inputs_share_samples_and_learn_from_frames(tmp_path):
 def test_camera_inputs_need_frames(rover_file):
     with pytest.raises(ValueError, match="no camera frames"):
         load_rover(rover_file, inputs="both")
+
+
+def _moving_camera_file(path, steps=3000, seed=0):
+    """A synthetic run where only movement between frames reveals the label: the bright patch slides.
+
+    One bright patch drifts along a random walk. It is positive exactly when the
+    patch moved on this step, which no single frame can show: the patch sits at
+    an arbitrary column either way.
+    """
+    rng = np.random.default_rng(seed)
+    images = rng.integers(0, 60, size=(steps, 48, 64), dtype=np.uint8)
+    step_size = rng.choice([0, 7], size=steps, p=[0.7, 0.3])
+    column = (8 + np.cumsum(step_size)) % 40
+    label = step_size > 0
+    for t in range(steps):
+        images[t, 10:38, column[t] : column[t] + 16] = 220
+    np.savez_compressed(
+        path,
+        features=rng.normal(size=(steps, len(FEATURES))).astype(np.float32),
+        label=label,
+        valid=np.ones(steps, dtype=bool),
+        bump=np.zeros(steps, dtype=bool),
+        episode=np.zeros(steps, dtype=np.int32),
+        pose=np.zeros((steps, 3), dtype=np.float32),
+        images=images,
+        image_age=np.zeros(steps, dtype=np.float32),
+    )
+
+
+def test_frame_history_stacks_the_feature_window(tmp_path):
+    from ramms_fleet.experiment import load_model, save_model
+
+    path = tmp_path / "rover_00.npz"
+    _camera_file(path)
+    one, many = load_rover(path, inputs="camera"), load_rover(path, inputs="camera-history")
+    # Same samples as every other choice of inputs, one channel per step of the window.
+    assert len(one.y_train) == len(many.y_train)
+    assert many.img_train.shape[1:] == (4, 24, 32)
+    # The newest frame is last, and matches the single-frame loader.
+    np.testing.assert_allclose(many.img_train[:, 3], one.img_train[:, 0])
+
+    model = make_model(many.input_dim, 32, "camera-history")
+    assert model.cnn[0].in_channels == 4
+    save_model(tmp_path / "m.pt", model, many.input_dim, 32, 4, "camera-history")
+    loaded, history, inputs = load_model(tmp_path / "m.pt")
+    assert (history, inputs) == (4, "camera-history")
+    np.testing.assert_allclose(
+        evaluate(loaded, many.x_test, many.y_test, many.img_test)["auroc"],
+        evaluate(model, many.x_test, many.y_test, many.img_test)["auroc"],
+    )
+
+
+def test_frame_history_learns_motion_a_single_frame_cannot(tmp_path):
+    path = tmp_path / "rover_00.npz"
+    _moving_camera_file(path)
+
+    def auroc(inputs):
+        data = load_rover(path, inputs=inputs)
+        torch.manual_seed(0)
+        model = make_model(data.input_dim, 32, inputs)
+        train(model, data.x_train, data.y_train, epochs=4, seed=0, images=data.img_train)
+        return evaluate(model, data.x_test, data.y_test, data.img_test)["auroc"]
+
+    assert auroc("camera-history") > 0.9
+    assert auroc("camera") < 0.7

@@ -21,6 +21,7 @@ and the shared task is predicting their own collisions.
 | Front camera as a model input | done | #6 |
 | Pedestrians in both backends | done | #7 |
 | Camera frame history | done | #8 |
+| Closed loop: the model guards the driving policy | done | #9 |
 
 Headline results (details and every table in [docs/results.md](docs/results.md)):
 
@@ -39,6 +40,9 @@ Headline results (details and every table in [docs/results.md](docs/results.md))
   more: FedAvg's lead over local-only grows from +0.067 to +0.097 in MuJoCo. In
   RAMMS the camera stops helping once pedestrians move (3 seeds). Giving the
   camera model the whole window of frames changes neither result.
+- Letting the model drive halves collisions per 100 m in 5 of 5 seeds, and with
+  pedestrians the shared model beats local-only there too (72 against 85 per
+  100 m, 5 of 5 seeds).
 
 ## Install
 
@@ -298,6 +302,8 @@ drawn from the true geometry.
 | `ramms-fleet-sweep` | repeat collect, baselines, federated runs, and eval over seeds | `--seeds`, `--jobs`, `--proximal-mus` (none for FedAvg only), profile, pedestrian, and label options, `--summarize-only` |
 | `ramms-fleet-compare` | markdown tables across finished sweeps | `NAME=RESULTS_DIR ...`, `--out` |
 | `ramms-fleet-render` | overview and side-by-side videos | `overview --model`, `compare --rover --models` |
+| `ramms-fleet-guard` | drive with a model guarding the policy, and count collisions and distance | `--model` (`{rover}` for per-rover models), `--threshold`, `--brake`, `--turn`, `--pedestrians`, `--seconds` |
+| `ramms-fleet-guard-summary` | average guard runs into a table | results directory, `--out` |
 
 Every command has `--help`. Data and results default to `data/` and `results/`,
 which git ignores.
@@ -314,6 +320,7 @@ Scripts that reproduce the recorded experiments:
 | `scripts/ramms_camera.sh` | camera collection in RAMMS, features vs camera vs both | about 4 h |
 | `scripts/crowds.sh` | pedestrians: RAMMS camera runs (features, camera, both) and a MuJoCo sweep | about 2.5 h |
 | `scripts/frame_history.sh` | the same RAMMS data with a window of camera frames | about 2.5 h |
+| `scripts/guard.sh` | the model drives: collisions and distance with and without a guard | about 20 min |
 
 The earlier sweeps are single `ramms-fleet-sweep` commands, listed with their
 results in [docs/results.md](docs/results.md).
@@ -337,6 +344,7 @@ src/ramms_fleet/
   sweep.py           ramms-fleet-sweep and ramms-fleet-compare
   view.py            ramms-fleet-view
   render.py          ramms-fleet-render
+  guard.py           ramms-fleet-guard and ramms-fleet-guard-summary
   ramms/             RAMMS backend: URLab bridge client and RammsFleet
 scripts/             experiment scripts
 docs/results.md      every experiment and its results
